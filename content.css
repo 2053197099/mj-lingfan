@@ -587,7 +587,8 @@
   margin-top: -1px;
 }
 
-.mj-flow-command-repeat {
+.mj-flow-command-repeat,
+.mj-flow-command-interval {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -596,10 +597,45 @@
   font-weight: 650;
 }
 
-.mj-flow-command-repeat .mj-flow-input {
-  width: 72px;
+.mj-flow-command-interval {
+  gap: 4px;
+  margin-left: 2px;
+  white-space: nowrap;
+}
+
+.mj-flow-command-repeat .mj-flow-input,
+.mj-flow-command-interval .mj-flow-input {
+  width: 54px;
   min-height: 28px;
   padding: 4px 8px;
+  text-align: left;
+}
+
+.mj-flow-command-interval em {
+  color: #94a3b8;
+  font-style: normal;
+}
+
+.mj-flow-inline-status {
+  flex: 1 1 120px;
+  min-width: 112px;
+  max-width: 220px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: #f1f5f9;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.mj-flow-inline-status.warn {
+  background: #fff7ed;
+  color: #9a3412;
 }
 
 .mj-flow-tool-button,

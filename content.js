@@ -1,10 +1,12 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "0.5.13";
+  const BUILD_LABEL = "1.0.0";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
+  const DEFAULT_SEND_INTERVAL_MIN = 10;
+  const DEFAULT_SEND_INTERVAL_MAX = 30;
 
   const SUFFIX_PRESETS = [
     { token: "@写实", label: "写实", value: "photorealistic, natural light, high detail --style raw" },
@@ -139,13 +141,9 @@
   ];
 
   const DEFAULT_SETTINGS = {
-    sendPreset: "fast",
-    delayMin: 15,
-    delayMax: 25,
-    roundCountMin: 7,
-    roundCountMax: 10,
-    roundWaitMin: 90,
-    roundWaitMax: 150,
+    sendPreset: "slow",
+    sendIntervalMin: DEFAULT_SEND_INTERVAL_MIN,
+    sendIntervalMax: DEFAULT_SEND_INTERVAL_MAX,
     aspectRatio: "1:1",
     variablesText: "",
     variableTags: {},
@@ -212,8 +210,10 @@
   async function loadState() {
     const saved = await chrome.storage.local.get(STORE_KEY);
     const data = saved[STORE_KEY] || {};
+    const hadLegacyTimingSettings = hasLegacyTimingSettings(data.settings);
 
     state.settings = sanitizeSettings(data.settings);
+    normalizeSendIntervalSettings();
     if (data.ui && typeof data.ui === "object") {
       state.docked = Boolean(data.ui.docked);
       state.dockSide = data.ui.dockSide === "left" ? "left" : "right";
@@ -231,7 +231,7 @@
           : task)
       : [];
     const mergedVariablePresets = mergeDefaultVariablePresets();
-    if (normalizedSendPreset || mergedVariablePresets) saveState();
+    if (normalizedSendPreset || mergedVariablePresets || hadLegacyTimingSettings) saveState();
   }
 
   function sanitizeSettings(input) {
@@ -243,6 +243,19 @@
       }
     }
     return settings;
+  }
+
+  function hasLegacyTimingSettings(input) {
+    if (!input || typeof input !== "object") return false;
+    return ["delayMin", "delayMax", "roundCountMin", "roundCountMax", "roundWaitMin", "roundWaitMax"]
+      .some((key) => Object.prototype.hasOwnProperty.call(input, key));
+  }
+
+  function normalizeSendIntervalSettings() {
+    const min = Math.max(1, Number(state.settings.sendIntervalMin) || DEFAULT_SEND_INTERVAL_MIN);
+    const max = Math.max(1, Number(state.settings.sendIntervalMax) || DEFAULT_SEND_INTERVAL_MAX);
+    state.settings.sendIntervalMin = Math.min(min, max);
+    state.settings.sendIntervalMax = Math.max(min, max);
   }
 
   function saveState() {
@@ -384,8 +397,8 @@
           <button class="mj-flow-button" data-action="pause" ${state.running ? "" : "disabled"}>暂停</button>
           <button class="mj-flow-button primary compact" data-action="enqueue">加入队列</button>
           <div class="mj-flow-segment compact" title="发送模式">
-            ${sendModeButton("fast", "Fast")}
             ${sendModeButton("slow", "Relax")}
+            ${sendModeButton("fast", "Fast")}
           </div>
         </div>
         <div class="mj-flow-command-tools">
@@ -403,6 +416,14 @@
             <span>重复次数</span>
             <input class="mj-flow-input" data-field="repeat" type="number" min="1" max="99" value="${escapeHtml(state.drafts.repeat || "1")}" />
           </label>
+          <label class="mj-flow-command-interval">
+            <span>间隔</span>
+            <input class="mj-flow-input" data-setting="sendIntervalMin" type="number" min="1" max="999" value="${escapeHtml(state.settings.sendIntervalMin)}" />
+            <em>-</em>
+            <input class="mj-flow-input" data-setting="sendIntervalMax" type="number" min="1" max="999" value="${escapeHtml(state.settings.sendIntervalMax)}" />
+            <span>秒</span>
+          </label>
+          <span class="mj-flow-inline-status${state.warning ? " warn" : ""}">${escapeHtml(inlineStatusText())}</span>
         </div>
       </div>
     `;
@@ -411,14 +432,14 @@
   function textPanel() {
     return `
       <div class="mj-flow-compose">
-        <label class="mj-flow-label">
+        <div class="mj-flow-label">
           <span class="mj-flow-label-head">
             <span>提示词</span>
             <span class="mj-flow-chip-row inline">${aspectRatioButtons()}</span>
             <button class="mj-flow-inline-tool" data-action="translate-prompts" title="翻译提示词为英文">文A</button>
           </span>
           <textarea class="mj-flow-textarea main" data-field="prompts" placeholder="每行一个提示词。按“加入队列”后，会自动组合前缀和后缀。">${escapeHtml(state.drafts.prompts || "")}</textarea>
-        </label>
+        </div>
         <div class="mj-flow-helper">每行一个任务。支持输入 @预设 和 {变量}，按“开始”会自动加入队列并发送。</div>
         <div class="mj-flow-field-strip">
           <span>提示词前缀</span>
@@ -614,11 +635,24 @@
     `;
   }
 
+  function inlineStatusText() {
+    if (state.warning) return state.warning;
+    if (/：\d+ 秒$/.test(state.status)) return state.status;
+    if (state.running) return state.status || "运行中";
+    return "等待开始";
+  }
+
   function updateStatusDisplay() {
     const status = shadow.querySelector(".mj-flow-status");
-    if (!status) return;
-    status.textContent = state.warning || state.status;
-    status.classList.toggle("warn", Boolean(state.warning));
+    if (status) {
+      status.textContent = state.warning || state.status;
+      status.classList.toggle("warn", Boolean(state.warning));
+    }
+    const inlineStatus = shadow.querySelector(".mj-flow-inline-status");
+    if (inlineStatus) {
+      inlineStatus.textContent = inlineStatusText();
+      inlineStatus.classList.toggle("warn", Boolean(state.warning));
+    }
   }
 
   function queueList() {
@@ -970,17 +1004,12 @@
   }
 
   function updateSetting(key, rawValue) {
-    const numericKeys = new Set([
-      "delayMin",
-      "delayMax",
-      "roundCountMin",
-      "roundCountMax",
-      "roundWaitMin",
-      "roundWaitMax"
-    ]);
-    state.settings[key] = numericKeys.has(key) ? Math.max(1, Number(rawValue) || 1) : rawValue;
-    applyPresetIfNeeded(key);
-    normalizeSettingRanges();
+    if (["sendIntervalMin", "sendIntervalMax"].includes(key)) {
+      state.settings[key] = Math.max(1, Number(rawValue) || 1);
+      normalizeSendIntervalSettings();
+    } else {
+      state.settings[key] = rawValue;
+    }
     saveState();
     render();
   }
@@ -1159,42 +1188,16 @@
     return element ? element.value.trim() : "";
   }
 
-  function applyPresetIfNeeded(key) {
-    if (key !== "sendPreset") return;
-    normalizeSendPreset();
-    const preset = state.settings.sendPreset;
-    if (preset === "fast") {
-      Object.assign(state.settings, { delayMin: 15, delayMax: 25, roundWaitMin: 90, roundWaitMax: 150 });
-    }
-    if (preset === "slow") {
-      Object.assign(state.settings, { delayMin: 60, delayMax: 90, roundWaitMin: 240, roundWaitMax: 360 });
-    }
-  }
-
   function normalizeSendPreset() {
     if (["fast", "slow"].includes(state.settings.sendPreset)) return false;
-    state.settings.sendPreset = "fast";
-    Object.assign(state.settings, { delayMin: 15, delayMax: 25, roundWaitMin: 90, roundWaitMax: 150 });
+    state.settings.sendPreset = DEFAULT_SETTINGS.sendPreset;
     return true;
-  }
-
-  function normalizeSettingRanges() {
-    const pairs = [
-      ["delayMin", "delayMax"],
-      ["roundCountMin", "roundCountMax"],
-      ["roundWaitMin", "roundWaitMax"]
-    ];
-    for (const [minKey, maxKey] of pairs) {
-      if (state.settings[minKey] > state.settings[maxKey]) {
-        state.settings[maxKey] = state.settings[minKey];
-      }
-    }
   }
 
   function enqueueFromForm(options = {}) {
     const shouldRender = options.render !== false;
     const prompts = expandPresetTokens(getFieldValue("prompts"));
-        const prefix = expandPresetTokens(getFieldValue("prefix"));
+    const prefix = expandPresetTokens(getFieldValue("prefix"));
     const suffix = buildSuffix(expandPresetTokens(getFieldValue("suffix")));
     const repeat = Math.max(1, Number(getFieldValue("repeat")) || 1);
     const parsed = parsePromptLines(prompts);
@@ -1273,8 +1276,6 @@
   function setSendPreset(value) {
     if (!["fast", "slow"].includes(value)) return;
     state.settings.sendPreset = value;
-    applyPresetIfNeeded("sendPreset");
-    normalizeSettingRanges();
     saveState();
     shadow.querySelectorAll("[data-action='set-send-mode']").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.sendMode === value);
@@ -1642,6 +1643,7 @@
 
   function startQueue() {
     if (state.running) return;
+    saveState();
     if (!state.queue.some((item) => item.status === "pending")) {
       const added = enqueueFromForm({ render: false });
       if (!added) {
@@ -1656,16 +1658,29 @@
     render();
 
     if (!processingPromise) {
-      processingPromise = processQueue().finally(() => {
-        processingPromise = null;
-      });
+      processingPromise = processQueue()
+        .catch((error) => handleQueueCrash(error))
+        .finally(() => {
+          processingPromise = null;
+        });
     }
   }
 
-  async function processQueue() {
-    let sentInRound = 0;
-    let roundLimit = randomInt(state.settings.roundCountMin, state.settings.roundCountMax);
+  function handleQueueCrash(error) {
+    const message = error?.message || String(error || "未知错误");
+    const sendingTask = state.queue.find((item) => item.status === "sending");
+    if (sendingTask) {
+      sendingTask.status = "failed";
+      sendingTask.error = message;
+    }
+    state.running = false;
+    setWarning(`队列异常停止：${message}`);
+    addLog(`队列异常停止：${message}`, "error");
+    saveState();
+    render({ captureDrafts: false });
+  }
 
+  async function processQueue() {
     while (state.running) {
       const task = state.queue.find((item) => item.status === "pending");
       if (!task) {
@@ -1680,17 +1695,18 @@
       task.status = "sending";
       addLog(task.prompt, "user");
       addLog(`准备发送：${shorten(task.prompt)}`, "info");
+      setStatus(`准备发送：${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? "..." : ""}`);
       saveState();
       render();
 
       try {
+        setStatus("正在检查输入框和页面状态。");
         addLog("初始化发送检查，正在检查输入框和页面状态。", "info");
         if (state.settings.autoDownload) markVisibleImagesAsSeen();
-        await sendPromptToMidjourney(task.prompt);
+        await withTimeout(sendPromptToMidjourney(task.prompt), 8000, "发送动作超时，请确认 Midjourney 页面可输入。");
         task.status = "sent";
         task.sentAt = Date.now();
         task.error = "";
-        sentInRound += 1;
         setStatus(`已发送：${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? "..." : ""}`);
         addLog(`已发送：${shorten(task.prompt)}`, "success");
         if (state.settings.autoDownload) {
@@ -1718,14 +1734,21 @@
         return;
       }
 
-      if (sentInRound >= roundLimit) {
-        sentInRound = 0;
-        roundLimit = randomInt(state.settings.roundCountMin, state.settings.roundCountMax);
-        await sleepWithStatus(randomInt(state.settings.roundWaitMin, state.settings.roundWaitMax), "轮次等待");
-      } else {
-        await sleepWithStatus(randomInt(state.settings.delayMin, state.settings.delayMax), "发送间隔");
-      }
+      await sleepWithStatus(randomSendIntervalSeconds(), "发送间隔");
     }
+  }
+
+  function randomSendIntervalSeconds() {
+    normalizeSendIntervalSettings();
+    return randomInt(state.settings.sendIntervalMin, state.settings.sendIntervalMax);
+  }
+
+  function withTimeout(promise, timeoutMs, message) {
+    let timer;
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   async function sendPromptToMidjourney(prompt) {
@@ -1828,7 +1851,11 @@
   }
 
   async function sleepWithStatus(seconds, label) {
-    for (let remaining = seconds; remaining > 0; remaining -= 1) {
+    normalizeSendIntervalSettings();
+    const safeSeconds = label === "发送间隔"
+      ? clamp(Number(seconds) || state.settings.sendIntervalMin, state.settings.sendIntervalMin, state.settings.sendIntervalMax)
+      : Math.max(1, Number(seconds) || 1);
+    for (let remaining = safeSeconds; remaining > 0; remaining -= 1) {
       if (!state.running) return;
       state.status = `${label}：${remaining} 秒`;
       updateStatusDisplay();
