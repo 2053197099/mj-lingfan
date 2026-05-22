@@ -1715,9 +1715,8 @@
       } catch (error) {
         task.status = "failed";
         task.error = error.message || String(error);
-        setWarning(`发送失败：${task.error}`);
-        addLog(`发送失败：${task.error}`, "error");
-        state.running = false;
+        setWarning(`发送失败：${task.error}，已跳过并继续执行后续任务。`);
+        addLog(`发送失败，已跳过继续：${task.error}`, "error");
       }
 
       saveState();
