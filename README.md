@@ -1,8 +1,8 @@
 # MJ 灵帆
 
-一个用于 Midjourney 网页端的轻量浏览器扩展，聚焦文生图提示词排队、变量展开、翻译、自动发送和图片下载。
+一个用于 Midjourney 网页端的本地轻量浏览器扩展，聚焦文生图提示词排队、变量展开、翻译、自动发送和图片下载。
 
-支持 Microsoft Edge 和 Google Chrome，使用 Manifest V3，无需构建步骤。
+支持 Microsoft Edge 和 Google Chrome，使用 Manifest V3，无需构建步骤，加载项目目录即可使用。
 
 ## 功能
 
@@ -27,6 +27,8 @@
 4. 选择本项目目录
 5. 打开或刷新 `https://www.midjourney.com/imagine`
 
+首次安装、更新或重新加载扩展后，需要刷新一次 Midjourney 页面，页面脚本才会生效。
+
 ## 浏览器兼容
 
 - Microsoft Edge：支持，推荐使用最新版
@@ -36,9 +38,12 @@
 ## 权限说明
 
 - `storage`：保存队列、变量、面板位置和用户设置
+- `alarms`：让队列间隔在浏览器后台更稳定地继续计时
 - `downloads`：下载 Midjourney 页面图片和导出的队列文件
 - `https://www.midjourney.com/*`：在 Midjourney 页面注入助手面板
 - `https://api.mymemory.translated.net/*`：调用免费翻译接口
+
+翻译依赖第三方免费接口，可能会因网络、频率限制或接口状态不稳定而失败。失败时插件会保留原始提示词，并提示稍后重试。
 
 ## 开发检查
 

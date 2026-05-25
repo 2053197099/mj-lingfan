@@ -1,12 +1,13 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.0";
+  const BUILD_LABEL = "1.0.12";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
   const DEFAULT_SEND_INTERVAL_MIN = 10;
   const DEFAULT_SEND_INTERVAL_MAX = 30;
+  const MAX_QUEUE_TASKS = 500;
 
   const SUFFIX_PRESETS = [
     { token: "@写实", label: "写实", value: "photorealistic, natural light, high detail --style raw" },
@@ -171,6 +172,11 @@
     dragging: false,
     dragOffset: { x: 0, y: 0 },
     queue: [],
+    queueRunnerId: "",
+    activeTaskId: "",
+    activeTaskStartedAt: 0,
+    queueTabId: 0,
+    nextSendAt: 0,
     logs: [],
     downloadedUrls: new Set(),
     drafts: {},
@@ -181,10 +187,11 @@
 
   let root;
   let shadow;
-  let processingPromise = null;
   let dockTimer = null;
   let imageHoverOverlay = null;
   let imageHoverTarget = null;
+  let countdownTimer = null;
+  const handledSendTaskIds = new Set();
 
   init();
 
@@ -205,6 +212,8 @@
     render();
     bindGlobalDrag();
     bindImageHoverDownloads();
+    bindBackgroundQueueEvents();
+    bindLocalCountdownTicker();
   }
 
   async function loadState() {
@@ -223,13 +232,16 @@
       state.settings.variableTags = {};
     }
     const normalizedSendPreset = normalizeSendPreset();
-    state.queue = Array.isArray(data.queue) && state.settings.restoreQueue
-      ? data.queue
-        .filter((task) => task.status !== "sent")
-        .map((task) => ["sending", "paused"].includes(task.status)
-          ? { ...task, status: "pending", error: "" }
-          : task)
-      : [];
+    state.queue = normalizeStoredQueue(data.queue);
+    state.logs = Array.isArray(data.logs) ? data.logs.slice(-80) : [];
+    state.queueRunnerId = typeof data.queueRunnerId === "string" ? data.queueRunnerId : "";
+    state.activeTaskId = typeof data.activeTaskId === "string" ? data.activeTaskId : "";
+    state.activeTaskStartedAt = Number(data.activeTaskStartedAt) || 0;
+    state.queueTabId = Number(data.queueTabId) || 0;
+    state.nextSendAt = Number(data.nextSendAt) || 0;
+    state.running = Boolean(data.running);
+    state.status = typeof data.status === "string" ? data.status : state.status;
+    state.warning = typeof data.warning === "string" ? data.warning : "";
     const mergedVariablePresets = mergeDefaultVariablePresets();
     if (normalizedSendPreset || mergedVariablePresets || hadLegacyTimingSettings) saveState();
   }
@@ -263,6 +275,15 @@
       [STORE_KEY]: {
         settings: state.settings,
         queue: state.queue,
+        queueRunnerId: state.queueRunnerId,
+        activeTaskId: state.activeTaskId,
+        activeTaskStartedAt: state.activeTaskStartedAt,
+        queueTabId: state.queueTabId,
+        nextSendAt: state.nextSendAt,
+        logs: state.logs,
+        running: state.running,
+        status: state.status,
+        warning: state.warning,
         ui: {
           docked: state.docked,
           dockSide: state.dockSide,
@@ -270,6 +291,74 @@
         }
       }
     });
+  }
+
+  function normalizeStoredQueue(queue) {
+    return Array.isArray(queue) && state.settings.restoreQueue
+      ? queue
+        .filter((task) => task.status !== "sent")
+        .map((task) => ["sending", "paused"].includes(task.status)
+          ? { ...task, status: "pending", error: "" }
+          : task)
+      : [];
+  }
+
+  function bindBackgroundQueueEvents() {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (message?.type !== "perform-send-prompt") return false;
+      if (message.taskId && handledSendTaskIds.has(message.taskId)) {
+        sendResponse({ ok: true, duplicate: true });
+        return false;
+      }
+      ensureActiveSendTask(message.taskId)
+        .then(() => runPromptSend(message.prompt, message.taskId))
+        .then(() => {
+          if (message.taskId) rememberHandledSendTaskId(message.taskId);
+        })
+        .then(() => sendResponse({ ok: true }))
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+      return true;
+    });
+
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local" || !changes[STORE_KEY]?.newValue) return;
+      const data = changes[STORE_KEY].newValue;
+      if (Array.isArray(data.queue)) state.queue = data.queue;
+      if (Array.isArray(data.logs)) state.logs = data.logs.slice(-80);
+      if (typeof data.queueRunnerId === "string") state.queueRunnerId = data.queueRunnerId;
+      if (typeof data.activeTaskId === "string") state.activeTaskId = data.activeTaskId;
+      state.activeTaskStartedAt = Number(data.activeTaskStartedAt) || 0;
+      state.queueTabId = Number(data.queueTabId) || 0;
+      state.nextSendAt = Number(data.nextSendAt) || 0;
+      if (typeof data.running === "boolean") state.running = data.running;
+      if (typeof data.status === "string") state.status = data.status;
+      if (typeof data.warning === "string") state.warning = data.warning;
+      if (data.settings && typeof data.settings === "object") {
+        state.settings = sanitizeSettings(data.settings);
+        normalizeSendIntervalSettings();
+      }
+      if (isEditingInput()) {
+        updateLivePanels();
+      } else {
+        render({ captureDrafts: true });
+      }
+    });
+  }
+
+  function rememberHandledSendTaskId(taskId) {
+    handledSendTaskIds.add(taskId);
+    if (handledSendTaskIds.size <= 120) return;
+    const first = handledSendTaskIds.values().next().value;
+    handledSendTaskIds.delete(first);
+  }
+
+  async function ensureActiveSendTask(taskId) {
+    if (!taskId) return;
+    const saved = await chrome.storage.local.get(STORE_KEY);
+    const data = saved[STORE_KEY] || {};
+    if (data.activeTaskId !== taskId) {
+      throw new Error("任务已过期，跳过发送。");
+    }
   }
 
   function normalizePanelPosition(position) {
@@ -637,6 +726,8 @@
 
   function inlineStatusText() {
     if (state.warning) return state.warning;
+    const remaining = currentCountdownSeconds();
+    if (remaining) return `发送间隔：${remaining} 秒`;
     if (/：\d+ 秒$/.test(state.status)) return state.status;
     if (state.running) return state.status || "运行中";
     return "等待开始";
@@ -645,7 +736,7 @@
   function updateStatusDisplay() {
     const status = shadow.querySelector(".mj-flow-status");
     if (status) {
-      status.textContent = state.warning || state.status;
+      status.textContent = inlineStatusText();
       status.classList.toggle("warn", Boolean(state.warning));
     }
     const inlineStatus = shadow.querySelector(".mj-flow-inline-status");
@@ -653,6 +744,45 @@
       inlineStatus.textContent = inlineStatusText();
       inlineStatus.classList.toggle("warn", Boolean(state.warning));
     }
+  }
+
+  function updateLivePanels() {
+    updateStatusDisplay();
+    const conversation = shadow.querySelector(".mj-flow-conversation");
+    if (conversation) {
+      conversation.innerHTML = logList();
+      conversation.scrollTop = conversation.scrollHeight;
+    }
+    const statusLine = shadow.querySelector(".mj-flow-status-line");
+    if (statusLine) {
+      const queueCount = state.queue.length;
+      const pendingCount = state.queue.filter((task) => task.status === "pending").length;
+      statusLine.innerHTML = `
+        <span class="mj-flow-pill">总计 ${queueCount}</span>
+        <span class="mj-flow-pill">待发 ${pendingCount}</span>
+        <span class="mj-flow-pill">${state.running ? "运行中" : "未运行"}</span>
+        <span class="mj-flow-status${state.warning ? " warn" : ""}">${escapeHtml(state.warning || state.status)}</span>
+      `;
+    }
+  }
+
+  function isEditingInput() {
+    const active = shadow?.activeElement;
+    if (!active) return false;
+    return active.matches("input, textarea, select, [contenteditable='true']");
+  }
+
+  function currentCountdownSeconds() {
+    if (!state.running || !state.nextSendAt) return 0;
+    return Math.max(0, Math.ceil((state.nextSendAt - Date.now()) / 1000));
+  }
+
+  function bindLocalCountdownTicker() {
+    clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      if (!state.running || !state.nextSendAt) return;
+      updateStatusDisplay();
+    }, 1000);
   }
 
   function queueList() {
@@ -947,8 +1077,15 @@
     }
     if (action === "pause") {
       state.running = false;
+      state.queueRunnerId = "";
+      state.activeTaskId = "";
+      state.activeTaskStartedAt = 0;
+      state.queueTabId = 0;
+      state.nextSendAt = 0;
       setStatus("已暂停，当前任务发送完成后停止。");
       addLog("已暂停，当前任务发送完成后停止。", "warn");
+      saveState();
+      sendRuntimeMessage({ type: "stop-queue-runner" });
       render();
       return;
     }
@@ -956,8 +1093,14 @@
       state.queue = [];
       state.logs = [];
       state.running = false;
+      state.queueRunnerId = "";
+      state.activeTaskId = "";
+      state.activeTaskStartedAt = 0;
+      state.queueTabId = 0;
+      state.nextSendAt = 0;
       setStatus("队列已清空。");
       saveState();
+      sendRuntimeMessage({ type: "stop-queue-runner" });
       render();
       return;
     }
@@ -1074,6 +1217,11 @@
       render();
       return;
     }
+    if (response.failedCount) {
+      setWarning("翻译接口暂时不可用，请稍后重试。原始提示词已保留。");
+      render();
+      return;
+    }
     target.value = response.lines.join("\n");
     state.drafts.prompts = target.value;
     setStatus("提示词已翻译为英文。");
@@ -1101,8 +1249,14 @@
     state.queue = [];
     state.logs = [];
     state.running = false;
+    state.queueRunnerId = "";
+    state.activeTaskId = "";
+    state.activeTaskStartedAt = 0;
+    state.queueTabId = 0;
+    state.nextSendAt = 0;
     state.warning = "";
     state.status = "已重置面板设置和输入框。";
+    sendRuntimeMessage({ type: "stop-queue-runner" });
     saveState();
     render({ captureDrafts: false, preserveScroll: false });
   }
@@ -1208,7 +1362,15 @@
       if (shouldRender) render();
       return 0;
     }
-    const taskInputs = buildTextTasks({ prompts: parsed, prefix, suffix, repeat });
+    const availableSlots = Math.max(0, MAX_QUEUE_TASKS - state.queue.length);
+    if (!availableSlots) {
+      setWarning(`队列最多保留 ${MAX_QUEUE_TASKS} 条任务，请先清理后再添加。`);
+      addLog(`队列已达到 ${MAX_QUEUE_TASKS} 条上限，未继续添加。`, "warn");
+      if (shouldRender) render();
+      return 0;
+    }
+
+    const taskInputs = buildTextTasks({ prompts: parsed, prefix, suffix, repeat, limit: availableSlots });
     if (!taskInputs.length) {
       if (shouldRender) render();
       return 0;
@@ -1218,6 +1380,7 @@
     for (const input of taskInputs) {
       const expandedPrompts = expandVariableCombinations(input.prompt);
       for (const expandedPrompt of expandedPrompts) {
+        if (tasks.length >= availableSlots) break;
         tasks.push({
           id: crypto.randomUUID(),
           mode: input.mode,
@@ -1228,11 +1391,16 @@
           error: ""
         });
       }
+      if (tasks.length >= availableSlots) break;
     }
 
     state.queue.push(...tasks);
     setStatus(`已加入 ${tasks.length} 条任务。`);
     addLog(`匹配到 ${tasks.length} 个提示词，已加入队列。`, "success");
+    if (tasks.length >= availableSlots) {
+      setWarning(`队列最多 ${MAX_QUEUE_TASKS} 条，已添加到上限。`);
+      addLog(`队列最多 ${MAX_QUEUE_TASKS} 条，超出部分未加入。`, "warn");
+    }
     saveState();
     if (shouldRender) render();
     return tasks.length;
@@ -1243,23 +1411,24 @@
     return element ? element.value.trim() : "";
   }
 
-  function buildTextTasks({ prompts, prefix, suffix, repeat }) {
+  function buildTextTasks({ prompts, prefix, suffix, repeat, limit = MAX_QUEUE_TASKS }) {
     const sourcePrompts = prompts.length ? prompts : [""];
     const tasks = [];
     for (const prompt of sourcePrompts) {
       const sourcePrompt = prompt;
       const composed = composePrompt(sourcePrompt, prefix, suffix);
-      pushRepeatedTask(tasks, "text", composed, sourcePrompt, repeat);
+      pushRepeatedTask(tasks, "text", composed, sourcePrompt, repeat, limit);
+      if (tasks.length >= limit) break;
     }
     return tasks;
   }
 
-  function pushRepeatedTask(tasks, mode, prompt, sourcePrompt, repeat) {
+  function pushRepeatedTask(tasks, mode, prompt, sourcePrompt, repeat, limit = MAX_QUEUE_TASKS) {
     const normalized = dedupeParameters(prompt).trim();
     if (!normalized) return;
     for (let index = 0; index < repeat; index += 1) {
       tasks.push({ mode, prompt: normalized, sourcePrompt });
-      if (tasks.length >= 500) return;
+      if (tasks.length >= limit) return;
     }
   }
 
@@ -1652,121 +1821,54 @@
       }
     }
     state.running = true;
+    state.queueRunnerId = crypto.randomUUID();
+    state.activeTaskId = "";
+    state.activeTaskStartedAt = 0;
+    state.queueTabId = 0;
+    state.nextSendAt = 0;
     state.warning = "";
     setStatus("队列开始运行。");
     addLog("开始发送。", "success");
-    render();
-
-    if (!processingPromise) {
-      processingPromise = processQueue()
-        .catch((error) => handleQueueCrash(error))
-        .finally(() => {
-          processingPromise = null;
-        });
-    }
-  }
-
-  function handleQueueCrash(error) {
-    const message = error?.message || String(error || "未知错误");
-    const sendingTask = state.queue.find((item) => item.status === "sending");
-    if (sendingTask) {
-      sendingTask.status = "failed";
-      sendingTask.error = message;
-    }
-    state.running = false;
-    setWarning(`队列异常停止：${message}`);
-    addLog(`队列异常停止：${message}`, "error");
     saveState();
-    render({ captureDrafts: false });
-  }
-
-  async function processQueue() {
-    while (state.running) {
-      const task = state.queue.find((item) => item.status === "pending");
-      if (!task) {
-        state.running = false;
-        setStatus("队列已完成。");
-        addLog("当前排队任务数量为 0。", "success");
-        saveState();
-        render();
-        return;
-      }
-
-      task.status = "sending";
-      addLog(task.prompt, "user");
-      addLog(`准备发送：${shorten(task.prompt)}`, "info");
-      setStatus(`准备发送：${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? "..." : ""}`);
+    render();
+    sendRuntimeMessage({ type: "start-queue-runner", runnerId: state.queueRunnerId }).then((response) => {
+      if (response?.ok) return;
+      setWarning(`后台队列启动失败：${response?.error || "未知错误"}`);
+      addLog(`后台队列启动失败：${response?.error || "未知错误"}`, "error");
       saveState();
       render();
-
-      try {
-        setStatus("正在检查输入框和页面状态。");
-        addLog("初始化发送检查，正在检查输入框和页面状态。", "info");
-        if (state.settings.autoDownload) markVisibleImagesAsSeen();
-        await withTimeout(sendPromptToMidjourney(task.prompt), 8000, "发送动作超时，请确认 Midjourney 页面可输入。");
-        task.status = "sent";
-        task.sentAt = Date.now();
-        task.error = "";
-        setStatus(`已发送：${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? "..." : ""}`);
-        addLog(`已发送：${shorten(task.prompt)}`, "success");
-        if (state.settings.autoDownload) {
-          await downloadVisibleImages({ onlyNew: true, silent: true, waitForNew: true });
-        }
-      } catch (error) {
-        task.status = "failed";
-        task.error = error.message || String(error);
-        setWarning(`发送失败：${task.error}，已跳过并继续执行后续任务。`);
-        addLog(`发送失败，已跳过继续：${task.error}`, "error");
-      }
-
-      saveState();
-      render();
-
-      if (!state.running) return;
-
-      if (!state.queue.some((item) => item.status === "pending")) {
-        state.running = false;
-        setStatus("队列已完成。");
-        addLog("当前排队任务数量为 0。", "success");
-        saveState();
-        render();
-        return;
-      }
-
-      await sleepWithStatus(randomSendIntervalSeconds(), "发送间隔");
-    }
-  }
-
-  function randomSendIntervalSeconds() {
-    normalizeSendIntervalSettings();
-    return randomInt(state.settings.sendIntervalMin, state.settings.sendIntervalMax);
-  }
-
-  function withTimeout(promise, timeoutMs, message) {
-    let timer;
-    const timeout = new Promise((_, reject) => {
-      timer = setTimeout(() => reject(new Error(message)), timeoutMs);
     });
-    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
   }
 
   async function sendPromptToMidjourney(prompt) {
+    return runPromptSend(prompt);
+  }
+
+  async function runPromptSend(prompt, taskId = "") {
+    await ensureActiveSendTask(taskId);
+    await sleep(350);
     const target = findComposer();
     if (!target) {
       throw new Error("没有找到 Midjourney 输入框，请确认当前页面可以创作。");
     }
 
-    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.scrollIntoView({ block: "center", behavior: "auto" });
     await sleep(250);
+    await ensureActiveSendTask(taskId);
     focusAndSetText(target, prompt);
-    await sleep(250);
+    await sleep(300);
+    await ensureActiveSendTask(taskId);
 
     const sendButton = findSendButton(target);
     if (sendButton) {
-      sendButton.click();
-      return;
+      clickElement(sendButton);
+    } else {
+      dispatchEnter(target);
     }
+    await sleep(650);
+  }
 
+  function dispatchEnter(target) {
     target.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Enter",
       code: "Enter",
@@ -1781,21 +1883,62 @@
     }));
   }
 
+  function clickElement(element) {
+    const rect = element.getBoundingClientRect();
+    const options = {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: rect.left + rect.width / 2,
+      clientY: rect.top + rect.height / 2
+    };
+    element.dispatchEvent(new PointerEvent("pointerdown", options));
+    element.dispatchEvent(new MouseEvent("mousedown", options));
+    element.dispatchEvent(new PointerEvent("pointerup", options));
+    element.dispatchEvent(new MouseEvent("mouseup", options));
+    element.dispatchEvent(new MouseEvent("click", options));
+    element.click();
+  }
+
   function findComposer() {
     const candidates = [
       ...document.querySelectorAll("textarea, input[type='text'], [contenteditable='true']")
-    ].filter(isVisible);
+    ].filter((element) => isVisible(element) && isEditableComposer(element));
 
     const preferred = candidates.find((element) => {
       const label = [
         element.getAttribute("placeholder"),
         element.getAttribute("aria-label"),
+        element.getAttribute("data-testid"),
+        element.id,
+        element.className,
         element.textContent
       ].join(" ").toLowerCase();
       return /imagine|prompt|describe|what|想象|提示词|创作/.test(label);
     });
 
-    return preferred || candidates[candidates.length - 1] || null;
+    if (preferred) return preferred;
+
+    const bottomComposer = candidates
+      .map((element) => ({ element, rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.width >= 180 && rect.height >= 24)
+      .sort((a, b) => {
+        const aScore = a.rect.top + a.rect.width / 100;
+        const bScore = b.rect.top + b.rect.width / 100;
+        return bScore - aScore;
+      })[0]?.element;
+
+    return bottomComposer || candidates[candidates.length - 1] || null;
+  }
+
+  function isEditableComposer(element) {
+    if (!element || element.disabled || element.readOnly) return false;
+    const role = element.getAttribute("role") || "";
+    const ariaHidden = element.getAttribute("aria-hidden") === "true";
+    if (ariaHidden || /button|checkbox|switch|menuitem/i.test(role)) return false;
+    const rect = element.getBoundingClientRect();
+    if (rect.width < 80 || rect.height < 18) return false;
+    return true;
   }
 
   function findSendButton(target) {
@@ -1806,6 +1949,7 @@
       const label = [
         button.getAttribute("aria-label"),
         button.title,
+        button.getAttribute("data-testid"),
         button.textContent
       ].join(" ").toLowerCase();
       return /send|submit|create|imagine|generate|发送|创建|生成/.test(label);
@@ -1813,7 +1957,7 @@
     if (explicitButton) return explicitButton;
 
     const targetRect = target.getBoundingClientRect();
-    return localButtons
+    const positionalButton = localButtons
       .map((button) => ({ button, rect: button.getBoundingClientRect() }))
       .filter(({ rect }) => {
         const overlapsInput = rect.bottom >= targetRect.top && rect.top <= targetRect.bottom;
@@ -1821,20 +1965,29 @@
         const isIconSized = rect.width <= 64 && rect.height <= 64;
         return overlapsInput && isRightSide && isIconSized;
       })
-      .sort((a, b) => b.rect.left - a.rect.left)[0]?.button || null;
+      .sort((a, b) => b.rect.left - a.rect.left)[0]?.button;
+    if (positionalButton) return positionalButton;
+
+    return buttons
+      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
+      .filter(({ rect }) => {
+        const closeVertically = Math.abs((rect.top + rect.bottom) / 2 - (targetRect.top + targetRect.bottom) / 2) <= 80;
+        const nearRightEdge = rect.left >= targetRect.left && rect.left <= targetRect.right + 120;
+        const clickableSize = rect.width >= 24 && rect.width <= 96 && rect.height >= 24 && rect.height <= 96;
+        return closeVertically && nearRightEdge && clickableSize;
+      })
+      .sort((a, b) => {
+        const aDistance = Math.abs(a.rect.left - targetRect.right);
+        const bDistance = Math.abs(b.rect.left - targetRect.right);
+        return aDistance - bDistance;
+      })[0]?.button || null;
   }
 
   function focusAndSetText(target, text) {
-    target.focus();
+    target.focus({ preventScroll: true });
 
     if (target.isContentEditable) {
-      const selection = window.getSelection();
-      const range = document.createRange();
-      range.selectNodeContents(target);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      document.execCommand("insertText", false, text);
-      target.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
+      writeContentEditable(target, text);
       return;
     }
 
@@ -1849,17 +2002,41 @@
     target.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
-  async function sleepWithStatus(seconds, label) {
-    normalizeSendIntervalSettings();
-    const safeSeconds = label === "发送间隔"
-      ? clamp(Number(seconds) || state.settings.sendIntervalMin, state.settings.sendIntervalMin, state.settings.sendIntervalMax)
-      : Math.max(1, Number(seconds) || 1);
-    for (let remaining = safeSeconds; remaining > 0; remaining -= 1) {
-      if (!state.running) return;
-      state.status = `${label}：${remaining} 秒`;
-      updateStatusDisplay();
-      await sleep(1000);
+  function writeContentEditable(target, text) {
+    const selection = window.getSelection();
+    const range = document.createRange();
+
+    try {
+      range.selectNodeContents(target);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.execCommand("insertText", false, text);
+    } catch (_) {
+      // Background tabs can reject selection/edit commands. The direct write
+      // below keeps queued sending working while the user is on another tab.
     }
+
+    if (!target.textContent || target.textContent.trim() !== text.trim()) {
+      target.textContent = text;
+      const endRange = document.createRange();
+      endRange.selectNodeContents(target);
+      endRange.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(endRange);
+    }
+
+    target.dispatchEvent(new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      inputType: "insertText",
+      data: text
+    }));
+    target.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: text
+    }));
+    target.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
   async function downloadVisibleImages(options = {}) {
@@ -2199,12 +2376,6 @@
     const rect = element.getBoundingClientRect();
     const style = window.getComputedStyle(element);
     return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
-  }
-
-  function randomInt(min, max) {
-    const low = Math.min(min, max);
-    const high = Math.max(min, max);
-    return Math.floor(Math.random() * (high - low + 1)) + low;
   }
 
   function sleep(ms) {
