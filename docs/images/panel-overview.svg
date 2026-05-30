@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="620" viewBox="0 0 980 620" role="img" aria-label="MJ Lingfan panel overview">
+  <rect width="980" height="620" fill="#f8fafc"/>
+  <rect x="34" y="28" width="912" height="564" rx="18" fill="#fff" stroke="#d8dee8" stroke-width="2"/>
+  <rect x="34" y="28" width="912" height="62" rx="18" fill="#f7f9fc" stroke="#d8dee8" stroke-width="2"/>
+  <rect x="56" y="47" width="34" height="34" rx="8" fill="#2563eb"/>
+  <text x="102" y="69" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#172033">MJ 灵帆</text>
+  <text x="190" y="69" font-family="Arial, sans-serif" font-size="15" font-weight="700" fill="#64748b">v1.0.17</text>
+  <text x="778" y="69" font-family="Arial, sans-serif" font-size="25" font-weight="800" fill="#172033">?</text>
+  <text x="828" y="69" font-family="Arial, sans-serif" font-size="25" font-weight="800" fill="#172033">←</text>
+  <text x="878" y="69" font-family="Arial, sans-serif" font-size="25" font-weight="800" fill="#172033">×</text>
+
+  <rect x="58" y="116" width="864" height="140" rx="14" fill="#fff" stroke="#d8dee8"/>
+  <text x="82" y="150" font-family="Arial, sans-serif" font-size="18" fill="#64748b">日志区：显示准备发送、已发送、失败原因和倒计时</text>
+  <rect x="82" y="174" width="310" height="42" rx="12" fill="#f0fdf4"/>
+  <text x="105" y="201" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#15803d">已发送：1 --sref random --relax --ar 1:1</text>
+
+  <rect x="58" y="280" width="110" height="42" rx="9" fill="#2563eb"/>
+  <text x="94" y="307" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#fff">开始</text>
+  <rect x="180" y="280" width="92" height="42" rx="9" fill="#fff" stroke="#d8dee8"/>
+  <text x="207" y="307" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#64748b">暂停</text>
+  <rect x="286" y="280" width="122" height="42" rx="9" fill="#2563eb"/>
+  <text x="315" y="307" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#fff">加入队列</text>
+  <rect x="430" y="280" width="150" height="42" rx="21" fill="#eef2f7" stroke="#d8dee8"/>
+  <rect x="434" y="284" width="72" height="34" rx="17" fill="#fff"/>
+  <text x="450" y="307" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#2563eb">Relax</text>
+  <text x="520" y="307" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#475569">Fast</text>
+  <rect x="742" y="280" width="80" height="42" rx="9" fill="#fff" stroke="#93b4ff"/>
+  <text x="763" y="307" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#2563eb">变量</text>
+  <rect x="836" y="280" width="42" height="42" rx="9" fill="#fff" stroke="#93b4ff"/>
+  <text x="849" y="307" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#2563eb">↻</text>
+  <rect x="890" y="280" width="42" height="42" rx="9" fill="#fff" stroke="#93b4ff"/>
+  <text x="901" y="307" font-family="Arial, sans-serif" font-size="21" fill="#92400e">🧹</text>
+
+  <text x="58" y="358" font-family="Arial, sans-serif" font-size="18" font-weight="700" fill="#475569">提示词</text>
+  <g font-family="Arial, sans-serif" font-size="16" font-weight="700">
+    <rect x="142" y="336" width="54" height="34" rx="8" fill="#eef4ff" stroke="#c7d2fe"/><text x="157" y="358" fill="#1d4ed8">1:2</text>
+    <rect x="206" y="336" width="66" height="34" rx="8" fill="#fff" stroke="#d8dee8"/><text x="222" y="358" fill="#334155">9:16</text>
+    <rect x="282" y="336" width="60" height="34" rx="8" fill="#fff" stroke="#d8dee8"/><text x="298" y="358" fill="#334155">3:4</text>
+    <rect x="352" y="336" width="54" height="34" rx="8" fill="#2563eb"/><text x="367" y="358" fill="#fff">1:1</text>
+    <rect x="416" y="336" width="60" height="34" rx="8" fill="#fff" stroke="#d8dee8"/><text x="432" y="358" fill="#334155">4:3</text>
+    <rect x="486" y="336" width="66" height="34" rx="8" fill="#fff" stroke="#d8dee8"/><text x="500" y="358" fill="#334155">16:9</text>
+    <rect x="562" y="336" width="54" height="34" rx="8" fill="#fff" stroke="#d8dee8"/><text x="577" y="358" fill="#334155">2:1</text>
+  </g>
+  <rect x="58" y="386" width="864" height="92" rx="10" fill="#fff" stroke="#d8dee8"/>
+  <text x="82" y="426" font-family="Arial, sans-serif" font-size="20" fill="#172033">1</text>
+  <rect x="838" y="382" width="72" height="42" rx="10" fill="#fff7ed" stroke="#fb923c"/>
+  <text x="858" y="410" font-family="Arial, sans-serif" font-size="20" font-weight="700" fill="#c2410c">文A</text>
+
+  <rect x="58" y="500" width="864" height="40" rx="9" fill="#fff" stroke="#d8dee8"/>
+  <rect x="58" y="552" width="864" height="40" rx="9" fill="#fff" stroke="#d8dee8"/>
+  <text x="82" y="526" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#475569">提示词前缀</text>
+  <text x="230" y="526" font-family="Arial, sans-serif" font-size="17" fill="#888">如 cinematic lighting，也可输入 @电影</text>
+  <text x="82" y="578" font-family="Arial, sans-serif" font-size="17" font-weight="700" fill="#475569">提示词后缀</text>
+  <text x="230" y="578" font-family="Arial, sans-serif" font-size="17" fill="#888">填数字会自动变成 --sref 数字</text>
+
+  <g font-family="Arial, sans-serif" font-size="13" fill="#475569">
+    <text x="58" y="270">开始：开始发送队列</text>
+    <text x="178" y="270">暂停：停止后续发送</text>
+    <text x="286" y="270">加入队列：只添加不发送</text>
+    <text x="430" y="270">Relax/Fast：发送速度参数</text>
+    <text x="742" y="270">变量：管理 @变量</text>
+    <text x="835" y="270">重置</text>
+    <text x="886" y="270">清日志</text>
+  </g>
+</svg>

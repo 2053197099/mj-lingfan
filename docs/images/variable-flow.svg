@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="430" viewBox="0 0 980 430" role="img" aria-label="MJ Lingfan variable usage">
+  <rect width="980" height="430" fill="#f8fafc"/>
+  <text x="44" y="54" font-family="Arial, sans-serif" font-size="28" font-weight="800" fill="#172033">变量使用流程</text>
+  <text x="44" y="88" font-family="Arial, sans-serif" font-size="17" fill="#64748b">把常用词组保存成变量，在提示词、前缀或后缀中用 @变量名、{变量名}、[变量名] 调用。</text>
+
+  <rect x="44" y="122" width="260" height="198" rx="14" fill="#fff" stroke="#d8dee8"/>
+  <text x="66" y="156" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">1. 添加变量</text>
+  <rect x="66" y="180" width="216" height="36" rx="8" fill="#eff6ff" stroke="#93b4ff"/>
+  <text x="82" y="204" font-family="Arial, sans-serif" font-size="16" fill="#172033">变量名：东方自然风景</text>
+  <rect x="66" y="228" width="216" height="70" rx="8" fill="#fff" stroke="#d8dee8"/>
+  <text x="82" y="252" font-family="Arial, sans-serif" font-size="15" fill="#334155">golden ginkgo forest</text>
+  <text x="82" y="276" font-family="Arial, sans-serif" font-size="15" fill="#334155">ink wash mountains</text>
+
+  <path d="M324 220h78" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="424" y="122" width="220" height="198" rx="14" fill="#fff" stroke="#d8dee8"/>
+  <text x="446" y="156" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="#172033">2. 在提示词中调用</text>
+  <rect x="446" y="186" width="176" height="50" rx="8" fill="#fff" stroke="#d8dee8"/>
+  <text x="464" y="218" font-family="Arial, sans-serif" font-size="22" font-weight="800" fill="#172033">@东方自然风景</text>
+  <text x="446" y="270" font-family="Arial, sans-serif" font-size="15" fill="#64748b">输入 @ 会出现候选菜单。</text>
+
+  <path d="M664 220h78" stroke="#94a3b8" stroke-width="3" marker-end="url(#arrow)"/>
+
+  <rect x="764" y="122" width="172" height="198" rx="14" fill="#f0fdf4" stroke="#86efac"/>
+  <text x="786" y="156" font-family="Arial, sans-serif" font-size="18" font-weight="800" fill="#15803d">3. 展开为任务</text>
+  <text x="786" y="196" font-family="Arial, sans-serif" font-size="15" fill="#172033">golden ginkgo forest</text>
+  <text x="786" y="224" font-family="Arial, sans-serif" font-size="15" fill="#172033">ink wash mountains</text>
+  <text x="786" y="252" font-family="Arial, sans-serif" font-size="15" fill="#172033">每行一条发送</text>
+
+  <rect x="44" y="350" width="892" height="46" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+  <text x="66" y="379" font-family="Arial, sans-serif" font-size="16" fill="#9a3412">建议：变量值使用英文词组，中文只放在变量名和标签里，避免污染 Midjourney 最终提示词。</text>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+</svg>

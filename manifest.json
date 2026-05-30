@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MJ 灵帆",
   "description": "Midjourney 文生图提示词排队、变量与自动发送助手。",
-  "version": "1.0.12",
+  "version": "1.0.17",
   "permissions": ["alarms", "downloads", "storage"],
   "host_permissions": [
     "https://www.midjourney.com/*",

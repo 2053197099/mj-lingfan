@@ -4,6 +4,7 @@ const SEND_ACTION_TIMEOUT_MS = 60000;
 const ACTIVE_TASK_TIMEOUT_MS = SEND_ACTION_TIMEOUT_MS + 30000;
 const TRANSLATE_TIMEOUT_MS = 12000;
 const queueRunners = new Map();
+const processingRunners = new Set();
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== QUEUE_ALARM) return;
@@ -87,6 +88,16 @@ async function resumeScheduledQueue() {
 }
 
 async function processNextQueueTask(tabId, runnerId) {
+  if (processingRunners.has(runnerId)) return;
+  processingRunners.add(runnerId);
+  try {
+    await processNextQueueTaskLocked(tabId, runnerId);
+  } finally {
+    processingRunners.delete(runnerId);
+  }
+}
+
+async function processNextQueueTaskLocked(tabId, runnerId) {
   const state = await getStoredState();
   if (!state.running || state.queueRunnerId !== runnerId) return;
   if (state.activeTaskId) {
@@ -99,6 +110,7 @@ async function processNextQueueTask(tabId, runnerId) {
     const lockedTask = state.queue.find((item) => item.id === state.activeTaskId);
     if (lockedTask && lockedTask.status === "sending") {
       lockedTask.status = "failed";
+      lockedTask.errorCategory = "timeout";
       lockedTask.error = "发送超时，已自动跳过。";
       addStoredLog(state, `发送超时，已跳过继续：${shorten(lockedTask.prompt)}`, "error");
     }
@@ -152,14 +164,16 @@ async function processNextQueueTask(tabId, runnerId) {
       latestTask.status = "sent";
       latestTask.sentAt = Date.now();
       latestTask.error = "";
+      latestTask.errorCategory = "";
       latest.status = `已发送：${shorten(task.prompt)}`;
       latest.warning = "";
       addStoredLog(latest, `已发送：${shorten(task.prompt)}`, "success");
     } else {
+      latestTask.errorCategory = response?.category || classifySendFailure(response?.error);
       latestTask.status = "failed";
       latestTask.error = response?.error || "发送失败";
-      latest.warning = `发送失败：${latestTask.error}，已跳过并继续执行后续任务。`;
-      addStoredLog(latest, `发送失败，已跳过继续：${latestTask.error}`, "error");
+      latest.warning = `发送失败：${failureCategoryLabel(latestTask.errorCategory)}，已跳过并继续执行后续任务。`;
+      addStoredLog(latest, `发送失败，已跳过继续：${failureCategoryLabel(latestTask.errorCategory)}：${latestTask.error}`, "error");
     }
   }
 
@@ -191,16 +205,19 @@ async function processNextQueueTask(tabId, runnerId) {
 async function sendPromptToTab(tabId, task) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   if (!tab) {
-    return { ok: false, error: "Midjourney 标签页已关闭。" };
+    return { ok: false, category: "tab_closed", error: "Midjourney 标签页已关闭。" };
   }
   if (tab.discarded) {
-    return { ok: false, error: "Midjourney 标签页被浏览器休眠，请打开该页面后重试。" };
+    return { ok: false, category: "discarded", error: "Midjourney 标签页被浏览器休眠，请打开该页面后重试。" };
   }
   return withTimeout(
     chrome.tabs.sendMessage(tabId, { type: "perform-send-prompt", taskId: task.id, prompt: task.prompt }),
     SEND_ACTION_TIMEOUT_MS,
     "发送动作超时，请确认 Midjourney 页面可输入。"
-  ).catch((error) => ({ ok: false, error: error.message || String(error) }));
+  ).catch((error) => {
+    const message = error.message || String(error);
+    return { ok: false, category: classifySendFailure(message), error: message };
+  });
 }
 
 function scheduleNextAlarm(timestamp) {
@@ -240,7 +257,30 @@ async function setStoredState(state) {
 
 function addStoredLog(state, message, type = "info") {
   state.logs.push({ message, type, time: Date.now() });
-  if (state.logs.length > 80) state.logs = state.logs.slice(-80);
+  if (state.logs.length > 60) state.logs = state.logs.slice(-60);
+}
+
+function classifySendFailure(message) {
+  const text = String(message || "");
+  if (/休眠|discard/i.test(text)) return "discarded";
+  if (/关闭|closed|No tab/i.test(text)) return "tab_closed";
+  if (/输入框|composer|可输入/.test(text)) return "composer";
+  if (/按钮|button/i.test(text)) return "button";
+  if (/超时|timeout/i.test(text)) return "timeout";
+  return "unknown";
+}
+
+function failureCategoryLabel(category) {
+  const labels = {
+    composer: "输入框",
+    button: "发送按钮",
+    timeout: "超时",
+    discarded: "页面休眠",
+    tab_closed: "页面关闭",
+    duplicate: "重复指令",
+    unknown: "其他"
+  };
+  return labels[category] || labels.unknown;
 }
 
 function randomSendIntervalSeconds(settings = {}) {

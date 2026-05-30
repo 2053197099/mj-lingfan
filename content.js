@@ -1,7 +1,7 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.12";
+  const BUILD_LABEL = "1.0.17";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
@@ -192,6 +192,7 @@
   let imageHoverTarget = null;
   let countdownTimer = null;
   const handledSendTaskIds = new Set();
+  const activeSendTaskIds = new Set();
 
   init();
 
@@ -233,7 +234,7 @@
     }
     const normalizedSendPreset = normalizeSendPreset();
     state.queue = normalizeStoredQueue(data.queue);
-    state.logs = Array.isArray(data.logs) ? data.logs.slice(-80) : [];
+    state.logs = Array.isArray(data.logs) ? data.logs.slice(-60) : [];
     state.queueRunnerId = typeof data.queueRunnerId === "string" ? data.queueRunnerId : "";
     state.activeTaskId = typeof data.activeTaskId === "string" ? data.activeTaskId : "";
     state.activeTaskStartedAt = Number(data.activeTaskStartedAt) || 0;
@@ -310,13 +311,21 @@
         sendResponse({ ok: true, duplicate: true });
         return false;
       }
+      if (message.taskId && activeSendTaskIds.has(message.taskId)) {
+        sendResponse({ ok: true, duplicate: true });
+        return false;
+      }
+      if (message.taskId) activeSendTaskIds.add(message.taskId);
       ensureActiveSendTask(message.taskId)
         .then(() => runPromptSend(message.prompt, message.taskId))
         .then(() => {
           if (message.taskId) rememberHandledSendTaskId(message.taskId);
         })
         .then(() => sendResponse({ ok: true }))
-        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }));
+        .catch((error) => sendResponse({ ok: false, error: error.message || String(error) }))
+        .finally(() => {
+          if (message.taskId) activeSendTaskIds.delete(message.taskId);
+        });
       return true;
     });
 
@@ -324,7 +333,7 @@
       if (areaName !== "local" || !changes[STORE_KEY]?.newValue) return;
       const data = changes[STORE_KEY].newValue;
       if (Array.isArray(data.queue)) state.queue = data.queue;
-      if (Array.isArray(data.logs)) state.logs = data.logs.slice(-80);
+      if (Array.isArray(data.logs)) state.logs = data.logs.slice(-60);
       if (typeof data.queueRunnerId === "string") state.queueRunnerId = data.queueRunnerId;
       if (typeof data.activeTaskId === "string") state.activeTaskId = data.activeTaskId;
       state.activeTaskStartedAt = Number(data.activeTaskStartedAt) || 0;
@@ -713,6 +722,7 @@
           <span class="mj-flow-pill">待发 ${pendingCount}</span>
           <span class="mj-flow-pill">${state.running ? "运行中" : "未运行"}</span>
           <span class="mj-flow-status${state.warning ? " warn" : ""}">${escapeHtml(state.warning || state.status)}</span>
+          ${failureSummary()}
         </div>
         <div class="mj-flow-queue-actions">
           <button class="mj-flow-link-button" data-action="download-visible">下载可见图片</button>
@@ -722,6 +732,41 @@
         ${queueCount ? `<div class="mj-flow-queue">${queueList()}</div>` : ""}
       </div>
     `;
+  }
+
+  function failureSummary() {
+    const failedTasks = state.queue.filter((task) => task.status === "failed");
+    if (!failedTasks.length) return "";
+    const counts = new Map();
+    failedTasks.forEach((task) => {
+      const label = failureCategoryLabel(task.errorCategory || classifyFailureText(task.error));
+      counts.set(label, (counts.get(label) || 0) + 1);
+    });
+    const text = [...counts.entries()].map(([label, count]) => `${label} ${count}`).join(" / ");
+    return `<span class="mj-flow-pill warn" title="失败原因统计">${escapeHtml(text)}</span>`;
+  }
+
+  function classifyFailureText(message) {
+    const text = String(message || "");
+    if (/休眠|discard/i.test(text)) return "discarded";
+    if (/关闭|closed|No tab/i.test(text)) return "tab_closed";
+    if (/输入框|composer|可输入/.test(text)) return "composer";
+    if (/按钮|button/i.test(text)) return "button";
+    if (/超时|timeout/i.test(text)) return "timeout";
+    return "unknown";
+  }
+
+  function failureCategoryLabel(category) {
+    const labels = {
+      composer: "输入框",
+      button: "发送按钮",
+      timeout: "超时",
+      discarded: "页面休眠",
+      tab_closed: "页面关闭",
+      duplicate: "重复指令",
+      unknown: "其他"
+    };
+    return labels[category] || labels.unknown;
   }
 
   function inlineStatusText() {
@@ -762,6 +807,7 @@
         <span class="mj-flow-pill">待发 ${pendingCount}</span>
         <span class="mj-flow-pill">${state.running ? "运行中" : "未运行"}</span>
         <span class="mj-flow-status${state.warning ? " warn" : ""}">${escapeHtml(state.warning || state.status)}</span>
+        ${failureSummary()}
       `;
     }
   }
@@ -816,12 +862,18 @@
       `;
     }
 
-    return state.logs.slice(-12).map((item) => `
+    const visibleLogs = state.logs.slice(-10);
+    const hiddenCount = Math.max(0, state.logs.length - visibleLogs.length);
+    return `${hiddenCount ? `
+      <div class="mj-flow-message-row assistant">
+        <div class="mj-flow-bubble muted">已折叠 ${hiddenCount} 条较早日志。</div>
+      </div>
+    ` : ""}${visibleLogs.map((item) => `
       <div class="mj-flow-message-row ${item.type === "user" ? "user" : "assistant"}">
         <div class="mj-flow-bubble ${item.type || "info"}">${escapeHtml(item.message)}</div>
         <time>${formatTime(item.time)}</time>
       </div>
-    `).join("");
+    `).join("")}`;
   }
 
   function modeLabel(mode) {
@@ -1135,6 +1187,7 @@
     if (action === "retry" && state.queue[index]) {
       state.queue[index].status = "pending";
       state.queue[index].error = "";
+      state.queue[index].errorCategory = "";
     }
     if (action === "move-up" && index > 0) {
       [state.queue[index - 1], state.queue[index]] = [state.queue[index], state.queue[index - 1]];
@@ -1388,7 +1441,8 @@
           sourcePrompt: input.sourcePrompt,
           status: "pending",
           createdAt: Date.now(),
-          error: ""
+          error: "",
+          errorCategory: ""
         });
       }
       if (tasks.length >= availableSlots) break;
@@ -1897,7 +1951,6 @@
     element.dispatchEvent(new PointerEvent("pointerup", options));
     element.dispatchEvent(new MouseEvent("mouseup", options));
     element.dispatchEvent(new MouseEvent("click", options));
-    element.click();
   }
 
   function findComposer() {
@@ -2271,6 +2324,7 @@
       if (task.status !== "failed") return;
       task.status = "pending";
       task.error = "";
+      task.errorCategory = "";
       count += 1;
     });
     setStatus(count ? `已重试 ${count} 条失败任务。` : "没有失败任务需要重试。");
@@ -2349,7 +2403,13 @@
       type,
       time: Date.now()
     });
-    if (state.logs.length > 80) state.logs = state.logs.slice(-80);
+    if (state.logs.length > 60) state.logs = state.logs.slice(-60);
+  }
+
+  function friendlySendError(error) {
+    const message = error?.message || String(error || "未知错误");
+    const category = failureCategoryLabel(classifyFailureText(message));
+    return `${category}：${message}`;
   }
 
   function clearLogs() {

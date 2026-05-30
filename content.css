@@ -351,6 +351,11 @@
   font-weight: 700;
 }
 
+.mj-flow-pill.warn {
+  background: #fff7ed;
+  color: #9a3412;
+}
+
 .mj-flow-chip-row {
   display: flex;
   flex-wrap: wrap;
