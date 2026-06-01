@@ -1,13 +1,18 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.17";
+  const BUILD_LABEL = "1.0.19";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
   const DEFAULT_SEND_INTERVAL_MIN = 10;
   const DEFAULT_SEND_INTERVAL_MAX = 30;
   const MAX_QUEUE_TASKS = 500;
+  const HELP_IMAGES = {
+    panel: chrome.runtime.getURL("docs/images/panel-overview.svg"),
+    rules: chrome.runtime.getURL("docs/images/command-rules.svg"),
+    variables: chrome.runtime.getURL("docs/images/variable-flow.svg")
+  };
 
   const SUFFIX_PRESETS = [
     { token: "@写实", label: "写实", value: "photorealistic, natural light, high detail --style raw" },
@@ -596,51 +601,76 @@
             <button class="mj-flow-icon-button" data-action="close-modal" title="关闭">×</button>
           </div>
           <div class="mj-flow-help">
-            <section>
-              <h3>快速发送</h3>
-              <p>在“提示词”里每行写一个任务，插件会按行拆分成队列。点击“加入队列”只保存任务，点击“开始”会把当前输入自动加入队列并开始发送。</p>
-              <ul>
-                <li>“暂停”只暂停后续发送，不会清空队列。</li>
-                <li>“重复次数”会为每条提示词重复生成指定次数。</li>
-                <li>“清空”只清空当前输入框；扫把按钮只清理日志，不影响正在运行的任务。</li>
-              </ul>
+            <section class="mj-flow-help-hero">
+              <h3>面板总览</h3>
+              <p>面板分三层：上方看日志，中间控制发送，下方填写提示词和参数。</p>
+              <img src="${HELP_IMAGES.panel}" alt="MJ 灵帆面板按钮说明" loading="lazy" />
             </section>
             <section>
-              <h3>参数规则</h3>
-              <p>尺寸按钮会自动生成 Midjourney 可识别的 <b>--ar</b> 参数；Fast/Relax 对应 <b>--fast</b> 和 <b>--relax</b>。</p>
-              <ul>
-                <li>提示词输入纯数字时，会自动变成 <b>数字 --sref random</b>。</li>
-                <li>后缀输入纯数字时，会自动变成 <b>--sref 数字</b>。</li>
-                <li>如果你已经手动写了 <b>--ar</b>、<b>--fast</b> 或 <b>--relax</b>，插件会尽量避免重复追加同类参数。</li>
-              </ul>
+              <h3>1 分钟上手</h3>
+              <ol>
+                <li>在“提示词”输入内容，每行一个任务。</li>
+                <li>选择尺寸，比如 <b>1:1</b>、<b>9:16</b>。</li>
+                <li>选择速度，默认 <b>Relax</b>，需要快速生成时切到 <b>Fast</b>。</li>
+                <li>设置重复次数和发送间隔，默认每次随机等待 <b>10-30 秒</b>。</li>
+                <li>点击 <b>加入队列</b> 只保存任务；点击 <b>开始</b> 会加入并开始发送。</li>
+              </ol>
+            </section>
+            <section>
+              <h3>默认命令</h3>
+              <p>插件会把按钮选择转换成 Midjourney 参数，不加逗号，避免命令报错。</p>
+              <img src="${HELP_IMAGES.rules}" alt="默认命令和参数规则示例" loading="lazy" />
+              <div class="mj-flow-help-example">
+                <span>输入 <b>1</b></span>
+                <code>1 --sref random --relax --ar 1:1</code>
+              </div>
+              <div class="mj-flow-help-example">
+                <span>后缀输入 <b>201824100</b></span>
+                <code>提示词 --sref 201824100 --relax --ar 1:1</code>
+              </div>
+            </section>
+            <section>
+              <h3>按钮说明</h3>
+              <div class="mj-flow-help-grid">
+                <span><b>开始</b>：开始发送队列</span>
+                <span><b>暂停</b>：暂停后续发送</span>
+                <span><b>加入队列</b>：只保存任务</span>
+                <span><b>Relax / Fast</b>：慢速 / 快速</span>
+                <span><b>自动下载</b>：尝试保存新图</span>
+                <span><b>重复次数</b>：每条任务生成几次</span>
+                <span><b>间隔</b>：两次发送之间随机等待</span>
+                <span><b>变量</b>：管理预设词</span>
+                <span><b>↻</b>：恢复默认输入和参数</span>
+                <span><b>🧹</b>：清空日志</span>
+                <span><b>文A</b>：中文翻译成英文</span>
+                <span><b>×</b>：收起面板</span>
+              </div>
             </section>
             <section>
               <h3>变量</h3>
-              <p>点击“变量”管理预设。变量值建议每行一个英文词组，最终发送时会展开成英文提示词，中文只用来帮助你识别分类。</p>
+              <p>变量用于保存常用场景、人物、风格。变量值建议每行一个英文词组。</p>
+              <img src="${HELP_IMAGES.variables}" alt="变量创建和调用流程" loading="lazy" />
+              <div class="mj-flow-help-example">
+                <span>调用方式</span>
+                <code>@东方自然风景 / {东方自然风景} / [东方自然风景]</code>
+              </div>
+              <p>如果变量里有多行内容，会自动拆成多条任务逐条发送。</p>
+            </section>
+            <section>
+              <h3>翻译和下载</h3>
               <ul>
-                <li>在提示词、前缀或后缀里输入 <b>@变量名</b>、<b>{变量名}</b> 或 <b>[变量名]</b> 都可以调用变量。</li>
-                <li>输入 <b>@</b> 后会弹出变量候选，点击候选会插入变量名。</li>
-                <li>一个变量有多行内容时，会拆成多条任务逐条发送。</li>
+                <li><b>文A</b> 只翻译提示词文本，不修改尺寸、速度、前缀和后缀。</li>
+                <li>翻译失败时会保留原文，稍后重试即可。</li>
+                <li>鼠标移到 Midjourney 图片上，会出现 <b>下载</b> 和 <b>下载全部</b>。</li>
+                <li>图片保存位置由浏览器决定，通常是默认下载文件夹。</li>
               </ul>
             </section>
             <section>
-              <h3>翻译</h3>
-              <p>“文A”会把当前中文提示词翻译成英文，并直接回填到提示词输入框。翻译只处理提示词文本，不会改动尺寸、速度、前缀和后缀。</p>
-            </section>
-            <section>
-              <h3>下载图片</h3>
-              <p>鼠标移到 Midjourney 生成图上会显示下载按钮。单张图可点“下载”，四宫格或同组图片可点“下载全部”。</p>
+              <h3>常见问题</h3>
               <ul>
-                <li>下载位置由浏览器决定，通常在 Edge/Chrome 的默认下载文件夹。</li>
-                <li>“自动下载”开启后，插件会尝试在检测到新生成图片时自动保存。</li>
-              </ul>
-            </section>
-            <section>
-              <h3>面板操作</h3>
-              <p>右上角箭头用于把面板切换到浏览器左侧或右侧；关闭按钮会把面板收起成侧边小图标，再次点击即可打开。</p>
-              <ul>
-                <li>刷新按钮会把提示词、前缀、后缀、尺寸、速度和重复次数恢复到默认值。</li>
-                <li>如果你更新了插件但界面版本没变化，请在扩展管理页刷新扩展，并重新打开 Midjourney 页面。</li>
+                <li>更新插件后，需要在扩展管理页点刷新，并刷新 Midjourney 页面。</li>
+                <li>长队列建议单独开一个浏览器窗口放 Midjourney，不要最小化。</li>
+                <li>任务失败后，插件会继续执行剩余任务；失败项可以单独重试。</li>
               </ul>
             </section>
           </div>

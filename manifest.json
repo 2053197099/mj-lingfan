@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "MJ 灵帆",
   "description": "Midjourney 文生图提示词排队、变量与自动发送助手。",
-  "version": "1.0.17",
+  "version": "1.0.19",
   "permissions": ["alarms", "downloads", "storage"],
   "host_permissions": [
     "https://www.midjourney.com/*",
@@ -30,7 +30,16 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content.css", "icons/icon-16.png", "icons/icon-32.png", "icons/icon-48.png", "icons/icon-128.png"],
+      "resources": [
+        "content.css",
+        "icons/icon-16.png",
+        "icons/icon-32.png",
+        "icons/icon-48.png",
+        "icons/icon-128.png",
+        "docs/images/panel-overview.svg",
+        "docs/images/command-rules.svg",
+        "docs/images/variable-flow.svg"
+      ],
       "matches": [
         "https://www.midjourney.com/*",
         "https://midjourney.com/*"
