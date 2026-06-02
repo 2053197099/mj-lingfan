@@ -1,7 +1,7 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.19";
+  const BUILD_LABEL = "1.0.20";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
@@ -276,27 +276,48 @@
     state.settings.sendIntervalMax = Math.max(min, max);
   }
 
-  function saveState() {
-    chrome.storage.local.set({
-      [STORE_KEY]: {
-        settings: state.settings,
-        queue: state.queue,
-        queueRunnerId: state.queueRunnerId,
-        activeTaskId: state.activeTaskId,
-        activeTaskStartedAt: state.activeTaskStartedAt,
-        queueTabId: state.queueTabId,
-        nextSendAt: state.nextSendAt,
-        logs: state.logs,
-        running: state.running,
-        status: state.status,
-        warning: state.warning,
-        ui: {
-          docked: state.docked,
-          dockSide: state.dockSide,
-          panelPosition: state.panelPosition
-        }
+  function storedStateSnapshot() {
+    return {
+      settings: state.settings,
+      queue: state.queue,
+      queueRunnerId: state.queueRunnerId,
+      activeTaskId: state.activeTaskId,
+      activeTaskStartedAt: state.activeTaskStartedAt,
+      queueTabId: state.queueTabId,
+      nextSendAt: state.nextSendAt,
+      logs: state.logs,
+      running: state.running,
+      status: state.status,
+      warning: state.warning,
+      ui: {
+        docked: state.docked,
+        dockSide: state.dockSide,
+        panelPosition: state.panelPosition
       }
-    });
+    };
+  }
+
+  function saveState(options = {}) {
+    const snapshot = storedStateSnapshot();
+    if (!options.writeQueue && state.running) {
+      chrome.storage.local.get(STORE_KEY).then((data) => {
+        const latest = data[STORE_KEY] || {};
+        if (latest.running && latest.queueRunnerId === state.queueRunnerId) {
+          snapshot.queue = Array.isArray(latest.queue) ? latest.queue : snapshot.queue;
+          snapshot.queueRunnerId = latest.queueRunnerId || snapshot.queueRunnerId;
+          snapshot.activeTaskId = latest.activeTaskId || "";
+          snapshot.activeTaskStartedAt = Number(latest.activeTaskStartedAt) || 0;
+          snapshot.queueTabId = Number(latest.queueTabId) || 0;
+          snapshot.nextSendAt = Number(latest.nextSendAt) || 0;
+          snapshot.logs = Array.isArray(latest.logs) ? latest.logs : snapshot.logs;
+          snapshot.status = typeof latest.status === "string" ? latest.status : snapshot.status;
+          snapshot.warning = typeof latest.warning === "string" ? latest.warning : snapshot.warning;
+        }
+        chrome.storage.local.set({ [STORE_KEY]: snapshot });
+      });
+      return;
+    }
+    chrome.storage.local.set({ [STORE_KEY]: snapshot });
   }
 
   function normalizeStoredQueue(queue) {
@@ -517,7 +538,7 @@
           </label>
           <label class="mj-flow-command-repeat">
             <span>重复次数</span>
-            <input class="mj-flow-input" data-field="repeat" type="number" min="1" max="99" value="${escapeHtml(state.drafts.repeat || "1")}" />
+            <input class="mj-flow-input" data-field="repeat" type="number" min="1" max="500" value="${escapeHtml(state.drafts.repeat || "1")}" />
           </label>
           <label class="mj-flow-command-interval">
             <span>间隔</span>
@@ -1166,7 +1187,7 @@
       state.nextSendAt = 0;
       setStatus("已暂停，当前任务发送完成后停止。");
       addLog("已暂停，当前任务发送完成后停止。", "warn");
-      saveState();
+      saveState({ writeQueue: true });
       sendRuntimeMessage({ type: "stop-queue-runner" });
       render();
       return;
@@ -1181,7 +1202,7 @@
       state.queueTabId = 0;
       state.nextSendAt = 0;
       setStatus("队列已清空。");
-      saveState();
+      saveState({ writeQueue: true });
       sendRuntimeMessage({ type: "stop-queue-runner" });
       render();
       return;
@@ -1340,7 +1361,7 @@
     state.warning = "";
     state.status = "已重置面板设置和输入框。";
     sendRuntimeMessage({ type: "stop-queue-runner" });
-    saveState();
+    saveState({ writeQueue: true });
     render({ captureDrafts: false, preserveScroll: false });
   }
 
@@ -1379,7 +1400,7 @@
     }
     state.settings.variableTags = tags;
     state.activeVariableName = name;
-    saveState();
+    saveState({ writeQueue: true });
     setStatus(`已保存变量 ${name}`);
     addLog(`已保存变量：${name}`, "success");
     state.modal = "variables";
@@ -1436,7 +1457,7 @@
     const prompts = expandPresetTokens(getFieldValue("prompts"));
     const prefix = expandPresetTokens(getFieldValue("prefix"));
     const suffix = buildSuffix(expandPresetTokens(getFieldValue("suffix")));
-    const repeat = Math.max(1, Number(getFieldValue("repeat")) || 1);
+    const repeat = Math.max(1, Math.min(MAX_QUEUE_TASKS, Number(getFieldValue("repeat")) || 1));
     const parsed = parsePromptLines(prompts);
 
     if (!parsed.length) {
@@ -1445,7 +1466,15 @@
       if (shouldRender) render();
       return 0;
     }
-    const availableSlots = Math.max(0, MAX_QUEUE_TASKS - state.queue.length);
+    const requestedBaseTasks = parsed.length * repeat;
+    let availableSlots = Math.max(0, MAX_QUEUE_TASKS - state.queue.length);
+    if (availableSlots < requestedBaseTasks) {
+      const before = state.queue.length;
+      state.queue = state.queue.filter((task) => task.status !== "sent");
+      const removed = before - state.queue.length;
+      if (removed) addLog(`已自动清理 ${removed} 条已完成任务，为新队列腾出空间。`, "info");
+      availableSlots = Math.max(0, MAX_QUEUE_TASKS - state.queue.length);
+    }
     if (!availableSlots) {
       setWarning(`队列最多保留 ${MAX_QUEUE_TASKS} 条任务，请先清理后再添加。`);
       addLog(`队列已达到 ${MAX_QUEUE_TASKS} 条上限，未继续添加。`, "warn");
@@ -1480,12 +1509,12 @@
 
     state.queue.push(...tasks);
     setStatus(`已加入 ${tasks.length} 条任务。`);
-    addLog(`匹配到 ${tasks.length} 个提示词，已加入队列。`, "success");
+    addLog(`重复次数 ${repeat}，实际加入 ${tasks.length} 条任务。`, "success");
     if (tasks.length >= availableSlots) {
       setWarning(`队列最多 ${MAX_QUEUE_TASKS} 条，已添加到上限。`);
       addLog(`队列最多 ${MAX_QUEUE_TASKS} 条，超出部分未加入。`, "warn");
     }
-    saveState();
+    saveState({ writeQueue: true });
     if (shouldRender) render();
     return tasks.length;
   }
@@ -1896,7 +1925,6 @@
 
   function startQueue() {
     if (state.running) return;
-    saveState();
     if (!state.queue.some((item) => item.status === "pending")) {
       const added = enqueueFromForm({ render: false });
       if (!added) {
@@ -1913,13 +1941,13 @@
     state.warning = "";
     setStatus("队列开始运行。");
     addLog("开始发送。", "success");
-    saveState();
+    saveState({ writeQueue: true });
     render();
     sendRuntimeMessage({ type: "start-queue-runner", runnerId: state.queueRunnerId }).then((response) => {
       if (response?.ok) return;
       setWarning(`后台队列启动失败：${response?.error || "未知错误"}`);
       addLog(`后台队列启动失败：${response?.error || "未知错误"}`, "error");
-      saveState();
+      saveState({ writeQueue: true });
       render();
     });
   }
@@ -2358,7 +2386,7 @@
       count += 1;
     });
     setStatus(count ? `已重试 ${count} 条失败任务。` : "没有失败任务需要重试。");
-    saveState();
+    saveState({ writeQueue: true });
     render();
   }
 
@@ -2367,7 +2395,7 @@
     state.queue = state.queue.filter((task) => task.status !== "sent");
     const count = before - state.queue.length;
     setStatus(count ? `已清理 ${count} 条已完成任务。` : "没有已完成任务需要清理。");
-    saveState();
+    saveState({ writeQueue: true });
     render();
   }
 
