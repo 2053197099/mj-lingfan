@@ -156,31 +156,27 @@ async function processNextQueueTaskLocked(tabId, runnerId) {
   const response = await sendPromptToTab(tabId, task);
 
   const latest = await getStoredState();
-  const latestTask = latest.queue.find((item) => item.id === task.id) || latest.queue[taskIndex];
+  if (!latest.running || latest.queueRunnerId !== runnerId || latest.activeTaskId !== task.id) return;
+  const latestTask = latest.queue.find((item) => item.id === task.id);
+  if (!latestTask || latestTask.status !== "sending") return;
   latest.activeTaskId = "";
   latest.activeTaskStartedAt = 0;
-  if (latestTask) {
-    if (response?.ok) {
-      latestTask.status = "sent";
-      latestTask.sentAt = Date.now();
-      latestTask.error = "";
-      latestTask.errorCategory = "";
-      latest.status = `已发送：${shorten(task.prompt)}`;
-      latest.warning = "";
-      addStoredLog(latest, `已发送：${shorten(task.prompt)}`, "success");
-    } else {
-      latestTask.errorCategory = response?.category || classifySendFailure(response?.error);
-      latestTask.status = "failed";
-      latestTask.error = response?.error || "发送失败";
-      latest.warning = `发送失败：${failureCategoryLabel(latestTask.errorCategory)}，已跳过并继续执行后续任务。`;
-      addStoredLog(latest, `发送失败，已跳过继续：${failureCategoryLabel(latestTask.errorCategory)}：${latestTask.error}`, "error");
-    }
+  if (response?.ok) {
+    latestTask.status = "sent";
+    latestTask.sentAt = Date.now();
+    latestTask.error = "";
+    latestTask.errorCategory = "";
+    latest.status = `已发送：${shorten(task.prompt)}`;
+    latest.warning = "";
+    addStoredLog(latest, `已发送：${shorten(task.prompt)}`, "success");
+  } else {
+    latestTask.errorCategory = response?.category || classifySendFailure(response?.error);
+    latestTask.status = "failed";
+    latestTask.error = response?.error || "发送失败";
+    latest.warning = `发送失败：${failureCategoryLabel(latestTask.errorCategory)}，已跳过并继续执行后续任务。`;
+    addStoredLog(latest, `发送失败，已跳过继续：${failureCategoryLabel(latestTask.errorCategory)}：${latestTask.error}`, "error");
   }
 
-  if (!latest.running || latest.queueRunnerId !== runnerId) {
-    await setStoredState(latest);
-    return;
-  }
   if (!latest.queue.some((item) => item.status === "pending")) {
     latest.running = false;
     latest.queueRunnerId = "";

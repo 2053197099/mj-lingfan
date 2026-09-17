@@ -1,7 +1,7 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.20";
+  const BUILD_LABEL = "1.0.21";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
@@ -198,6 +198,7 @@
   let countdownTimer = null;
   const handledSendTaskIds = new Set();
   const activeSendTaskIds = new Set();
+  let pendingStateSave = Promise.resolve();
 
   init();
 
@@ -238,7 +239,7 @@
       state.settings.variableTags = {};
     }
     const normalizedSendPreset = normalizeSendPreset();
-    state.queue = normalizeStoredQueue(data.queue);
+    state.queue = normalizeStoredQueue(data.queue, Boolean(data.running));
     state.logs = Array.isArray(data.logs) ? data.logs.slice(-60) : [];
     state.queueRunnerId = typeof data.queueRunnerId === "string" ? data.queueRunnerId : "";
     state.activeTaskId = typeof data.activeTaskId === "string" ? data.activeTaskId : "";
@@ -299,12 +300,14 @@
 
   function saveState(options = {}) {
     const snapshot = storedStateSnapshot();
-    if (!options.writeQueue && state.running) {
-      chrome.storage.local.get(STORE_KEY).then((data) => {
+    const write = pendingStateSave.then(async () => {
+      if (!options.writeQueue) {
+        const data = await chrome.storage.local.get(STORE_KEY);
         const latest = data[STORE_KEY] || {};
-        if (latest.running && latest.queueRunnerId === state.queueRunnerId) {
+        if (latest.running || snapshot.running) {
           snapshot.queue = Array.isArray(latest.queue) ? latest.queue : snapshot.queue;
-          snapshot.queueRunnerId = latest.queueRunnerId || snapshot.queueRunnerId;
+          snapshot.running = Boolean(latest.running);
+          snapshot.queueRunnerId = latest.queueRunnerId || "";
           snapshot.activeTaskId = latest.activeTaskId || "";
           snapshot.activeTaskStartedAt = Number(latest.activeTaskStartedAt) || 0;
           snapshot.queueTabId = Number(latest.queueTabId) || 0;
@@ -313,19 +316,18 @@
           snapshot.status = typeof latest.status === "string" ? latest.status : snapshot.status;
           snapshot.warning = typeof latest.warning === "string" ? latest.warning : snapshot.warning;
         }
-        chrome.storage.local.set({ [STORE_KEY]: snapshot });
-      });
-      return;
-    }
-    chrome.storage.local.set({ [STORE_KEY]: snapshot });
+      }
+      await chrome.storage.local.set({ [STORE_KEY]: snapshot });
+    });
+    pendingStateSave = write.catch(() => {});
+    return write;
   }
 
-  function normalizeStoredQueue(queue) {
+  function normalizeStoredQueue(queue, running) {
     return Array.isArray(queue) && state.settings.restoreQueue
       ? queue
-        .filter((task) => task.status !== "sent")
-        .map((task) => ["sending", "paused"].includes(task.status)
-          ? { ...task, status: "pending", error: "" }
+        .map((task) => !running && task.status === "sending"
+          ? { ...task, status: "failed", error: "发送结果未确认，请检查 Midjourney 后再决定是否重试。" }
           : task)
       : [];
   }
@@ -1246,7 +1248,7 @@
     if (action === "move-down" && index < state.queue.length - 1) {
       [state.queue[index + 1], state.queue[index]] = [state.queue[index], state.queue[index + 1]];
     }
-    saveState();
+    saveState({ writeQueue: true });
     render();
   }
 
@@ -1400,7 +1402,7 @@
     }
     state.settings.variableTags = tags;
     state.activeVariableName = name;
-    saveState({ writeQueue: true });
+    saveState();
     setStatus(`已保存变量 ${name}`);
     addLog(`已保存变量：${name}`, "success");
     state.modal = "variables";
@@ -1923,7 +1925,7 @@
       .trim();
   }
 
-  function startQueue() {
+  async function startQueue() {
     if (state.running) return;
     if (!state.queue.some((item) => item.status === "pending")) {
       const added = enqueueFromForm({ render: false });
@@ -1941,7 +1943,14 @@
     state.warning = "";
     setStatus("队列开始运行。");
     addLog("开始发送。", "success");
-    saveState({ writeQueue: true });
+    try {
+      await saveState({ writeQueue: true });
+    } catch (error) {
+      state.running = false;
+      setWarning(`保存队列失败：${error.message || String(error)}`);
+      render();
+      return;
+    }
     render();
     sendRuntimeMessage({ type: "start-queue-runner", runnerId: state.queueRunnerId }).then((response) => {
       if (response?.ok) return;

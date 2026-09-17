@@ -48,6 +48,8 @@ MJ 灵帆是一个本地轻量浏览器扩展，用于 Midjourney 网页端文�
 | 队列上限 | `500 条` | 防止变量展开过多导致卡顿 |
 | 自动下载 | 关闭 | 开启后尝试保存新生成图片 |
 
+浏览器后台的定时唤醒可能晚于设定间隔；Chrome 的扩展闹钟最短约 30 秒，浏览器休眠时还可能继续延迟。因此 `10-30 秒` 是期望间隔，不保证后台严格按秒发送。
+
 ## 默认命令规则
 
 ![默认命令规则](docs/images/command-rules.svg)
@@ -230,4 +232,5 @@ eastern sea of clouds --relax --ar 1:1
 node --check content.js
 node --check background.js
 node -e "JSON.parse(require('fs').readFileSync('manifest.json', 'utf8'))"
+node --test tests/*.test.js
 ```
