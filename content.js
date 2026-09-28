@@ -1,12 +1,12 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.21";
+  const BUILD_LABEL = "1.0.26";
   const APP_NAME = "MJ 灵帆";
 
-  const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1"];
-  const DEFAULT_SEND_INTERVAL_MIN = 10;
-  const DEFAULT_SEND_INTERVAL_MAX = 30;
+  const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1", "21:9"];
+  const DEFAULT_SEND_INTERVAL_MIN = 35;
+  const DEFAULT_SEND_INTERVAL_MAX = 50;
   const MAX_QUEUE_TASKS = 500;
   const HELP_IMAGES = {
     panel: chrome.runtime.getURL("docs/images/panel-overview.svg"),
@@ -196,6 +196,8 @@
   let imageHoverOverlay = null;
   let imageHoverTarget = null;
   let countdownTimer = null;
+  let autoDownloadEnabled = false;
+  let autoDownloadBusy = false;
   const handledSendTaskIds = new Set();
   const activeSendTaskIds = new Set();
   let pendingStateSave = Promise.resolve();
@@ -635,8 +637,8 @@
                 <li>在“提示词”输入内容，每行一个任务。</li>
                 <li>选择尺寸，比如 <b>1:1</b>、<b>9:16</b>。</li>
                 <li>选择速度，默认 <b>Relax</b>，需要快速生成时切到 <b>Fast</b>。</li>
-                <li>设置重复次数和发送间隔，默认每次随机等待 <b>10-30 秒</b>。</li>
-                <li>点击 <b>加入队列</b> 只保存任务；点击 <b>开始</b> 会加入并开始发送。</li>
+                <li>设置重复次数和发送间隔，默认每次随机等待 <b>35-50 秒</b>。</li>
+                <li>点击 <b>加入队列</b> 只保存任务；点击 <b>开始</b> 发送已有待发送任务，没有待发送任务时才加入当前输入。</li>
               </ol>
             </section>
             <section>
@@ -663,7 +665,7 @@
                 <span><b>重复次数</b>：每条任务生成几次</span>
                 <span><b>间隔</b>：两次发送之间随机等待</span>
                 <span><b>变量</b>：管理预设词</span>
-                <span><b>↻</b>：恢复默认输入和参数</span>
+                <span><b>↻</b>：停止并清空队列、日志和输入，恢复默认参数，保留变量</span>
                 <span><b>🧹</b>：清空日志</span>
                 <span><b>文A</b>：中文翻译成英文</span>
                 <span><b>×</b>：收起面板</span>
@@ -686,6 +688,7 @@
                 <li>翻译失败时会保留原文，稍后重试即可。</li>
                 <li>鼠标移到 Midjourney 图片上，会出现 <b>下载</b> 和 <b>下载全部</b>。</li>
                 <li>图片保存位置由浏览器决定，通常是默认下载文件夹。</li>
+                <li>自动下载跳过开启时已有的图片，仅检查之后新出现的页面图片；后台休眠可能延迟检查。</li>
               </ul>
             </section>
             <section>
@@ -934,10 +937,11 @@
   }
 
   function bindEvents(shell) {
-    shell.addEventListener("mouseenter", cancelAutoDock);
-    shell.addEventListener("focusin", cancelAutoDock);
-    shell.addEventListener("mouseleave", scheduleAutoDock);
-    shell.addEventListener("focusout", () => setTimeout(scheduleAutoDock, 250));
+    const panel = shell.querySelector(".mj-flow-shell");
+    panel.addEventListener("mouseenter", cancelAutoDock);
+    panel.addEventListener("focusin", cancelAutoDock);
+    panel.addEventListener("mouseleave", scheduleAutoDock);
+    panel.addEventListener("focusout", () => setTimeout(scheduleAutoDock, 250));
 
     shell.querySelectorAll("[data-action]").forEach((button) => {
       button.addEventListener("click", (event) => {
@@ -978,16 +982,16 @@
     handle.addEventListener("mousedown", (event) => {
       if (!state.docked && event.target.closest("button")) return;
       cancelAutoDock();
-      const rect = shell.getBoundingClientRect();
+      const rect = panel.getBoundingClientRect();
       state.dragging = true;
       if (state.docked) {
         state.docked = false;
         state.panelPosition = { left: rect.left, top: rect.top };
-        shell.classList.remove("is-docked", "is-dock-left", "is-dock-right");
-        shell.style.width = "42px";
-        shell.style.height = "42px";
-        shell.style.left = `${rect.left}px`;
-        shell.style.right = "auto";
+        panel.classList.remove("is-docked", "is-dock-left", "is-dock-right");
+        panel.style.width = "42px";
+        panel.style.height = "42px";
+        panel.style.left = `${rect.left}px`;
+        panel.style.right = "auto";
       }
       state.collapsed = false;
       state.dragOffset = {
@@ -1259,6 +1263,7 @@
     } else {
       state.settings[key] = rawValue;
     }
+    if (key === "autoDownload") checkAutoDownloads();
     saveState();
     render();
   }
@@ -1313,7 +1318,8 @@
 
     setStatus("正在翻译提示词...");
     updateStatusDisplay();
-    const lines = target.value.split(/\r?\n/);
+    const original = target.value;
+    const lines = original.split(/\r?\n/);
     const response = await sendRuntimeMessage({
       type: "translate-prompts",
       lines
@@ -1328,8 +1334,14 @@
       render();
       return;
     }
-    target.value = response.lines.join("\n");
-    state.drafts.prompts = target.value;
+    const current = shadow.querySelector("[data-field='prompts']");
+    if (!current || current.value !== original) {
+      setWarning("提示词已在翻译期间修改，已保留当前输入。请重新翻译。");
+      updateStatusDisplay();
+      return;
+    }
+    current.value = response.lines.join("\n");
+    state.drafts.prompts = current.value;
     setStatus("提示词已翻译为英文。");
     render();
   }
@@ -1550,11 +1562,21 @@
   function setAspectRatio(ratio) {
     if (!ASPECT_RATIOS.includes(ratio)) return;
     state.settings.aspectRatio = ratio;
-    saveState();
+    let updated = 0;
+    if (!state.running) {
+      for (const task of state.queue) {
+        if (task.status !== "pending") continue;
+        task.prompt = dedupeParameters(`${stripAspectParameters(task.prompt)} --ar ${ratio}`);
+        updated += 1;
+      }
+    }
+    saveState({ writeQueue: updated > 0 });
     shadow.querySelectorAll("[data-action='set-aspect']").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.ratio === ratio);
     });
-    setStatus(`尺寸已设为 --ar ${ratio}`);
+    setStatus(state.running
+      ? `尺寸已设为 --ar ${ratio}，运行中的队列不变。`
+      : `尺寸已设为 --ar ${ratio}${updated ? `，已更新 ${updated} 条待发送任务` : ""}。`);
   }
 
   function setSendPreset(value) {
@@ -1740,13 +1762,12 @@
       const tokenPattern = new RegExp(`(?:\\{\\s*${escapeRegExp(key)}\\s*\\}|\\[\\s*${escapeRegExp(key)}\\s*\\]|@${escapeRegExp(key)}(?=\\s|,|，|$))`, "g");
       for (const item of results) {
         for (const value of values) {
-          next.push(item.replace(tokenPattern, value));
-          if (next.length >= 200) break;
+          next.push(item.replace(tokenPattern, () => value));
+          if (next.length >= MAX_QUEUE_TASKS) break;
         }
-        if (next.length >= 200) break;
+        if (next.length >= MAX_QUEUE_TASKS) break;
       }
       results = next;
-      if (results.length >= 200) break;
     }
     return results
       .map((item) => dedupeParameters(item.replace(/\s+/g, " ").trim()))
@@ -1785,18 +1806,18 @@
     for (const field of fields) {
       const fieldValues = Array.isArray(values[field.name]) && values[field.name].length
         ? values[field.name]
-        : field.options.length ? field.options : ["N/A"];
+        : field.options;
+      if (!fieldValues.length) continue;
       const tokenPattern = new RegExp(`(?:\\[\\s*${escapeRegExp(field.name)}(?:\\|[^\\]]+)?\\s*\\]|\\{\\s*${escapeRegExp(field.name)}\\s*\\})`, "g");
       const next = [];
       for (const item of results) {
         for (const value of fieldValues) {
-          next.push(item.replace(tokenPattern, value));
-          if (next.length >= 200) break;
+          next.push(item.replace(tokenPattern, () => value));
+          if (next.length >= MAX_QUEUE_TASKS) break;
         }
-        if (next.length >= 200) break;
+        if (next.length >= MAX_QUEUE_TASKS) break;
       }
       results = next;
-      if (results.length >= 200) break;
     }
     return results
       .map((item) => item.replace(/\s+/g, " ").trim())
@@ -1961,10 +1982,6 @@
     });
   }
 
-  async function sendPromptToMidjourney(prompt) {
-    return runPromptSend(prompt);
-  }
-
   async function runPromptSend(prompt, taskId = "") {
     await ensureActiveSendTask(taskId);
     await sleep(350);
@@ -1979,48 +1996,61 @@
     focusAndSetText(target, prompt);
     await sleep(300);
     await ensureActiveSendTask(taskId);
+    const currentText = target.isContentEditable ? target.textContent : target.value;
+    if (String(currentText || "").trim() !== prompt.trim()) {
+      throw new Error("提示词未正确填入或已被修改，已取消本次发送。");
+    }
 
     const sendButton = findSendButton(target);
     if (sendButton) {
-      clickElement(sendButton);
+      if (sendButton.disabled || sendButton.getAttribute("aria-disabled") === "true") {
+        throw new Error("发送按钮暂不可用，请确认页面已就绪后重试。");
+      }
+      sendButton.click();
     } else {
       dispatchEnter(target);
     }
-    await sleep(650);
+    await waitForComposerSubmission(target, taskId);
+  }
+
+  async function waitForComposerSubmission(target, taskId) {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      await ensureActiveSendTask(taskId);
+      const current = target.isConnected ? target : findComposer();
+      if (current) {
+        const text = current.isContentEditable ? current.textContent : current.value;
+        if (!String(text || "").trim()) return;
+      }
+      await sleep(250);
+    }
+    throw new Error("发送未确认：输入框仍有内容。请检查页面后再决定是否重试，以免重复提交。");
   }
 
   function dispatchEnter(target) {
     target.dispatchEvent(new KeyboardEvent("keydown", {
       key: "Enter",
       code: "Enter",
+      keyCode: 13,
+      which: 13,
+      composed: true,
       bubbles: true,
       cancelable: true
     }));
     target.dispatchEvent(new KeyboardEvent("keyup", {
       key: "Enter",
       code: "Enter",
+      keyCode: 13,
+      which: 13,
+      composed: true,
       bubbles: true,
       cancelable: true
     }));
   }
 
-  function clickElement(element) {
-    const rect = element.getBoundingClientRect();
-    const options = {
-      bubbles: true,
-      cancelable: true,
-      view: window,
-      clientX: rect.left + rect.width / 2,
-      clientY: rect.top + rect.height / 2
-    };
-    element.dispatchEvent(new PointerEvent("pointerdown", options));
-    element.dispatchEvent(new MouseEvent("mousedown", options));
-    element.dispatchEvent(new PointerEvent("pointerup", options));
-    element.dispatchEvent(new MouseEvent("mouseup", options));
-    element.dispatchEvent(new MouseEvent("click", options));
-  }
-
   function findComposer() {
+    const desktopComposer = document.getElementById("desktop_input_bar");
+    if (desktopComposer && isVisible(desktopComposer) && isEditableComposer(desktopComposer)) return desktopComposer;
     const candidates = [
       ...document.querySelectorAll("textarea, input[type='text'], [contenteditable='true']")
     ].filter((element) => isVisible(element) && isEditableComposer(element));
@@ -2062,45 +2092,21 @@
   }
 
   function findSendButton(target) {
-    const rootNode = target.closest("form") || target.parentElement || document;
-    const localButtons = [...rootNode.querySelectorAll("button")].filter(isVisible);
-    const buttons = [...localButtons, ...document.querySelectorAll("button")].filter(isVisible);
-    const explicitButton = buttons.find((button) => {
+    const form = target.closest("form");
+    const rootNode = form || target.parentElement;
+    if (!rootNode) return null;
+    const buttons = [...rootNode.querySelectorAll("button")].filter(isVisible);
+    return buttons.find((button) => {
       const label = [
         button.getAttribute("aria-label"),
         button.title,
         button.getAttribute("data-testid"),
         button.textContent
       ].join(" ").toLowerCase();
-      return /send|submit|create|imagine|generate|发送|创建|生成/.test(label);
-    });
-    if (explicitButton) return explicitButton;
-
-    const targetRect = target.getBoundingClientRect();
-    const positionalButton = localButtons
-      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
-      .filter(({ rect }) => {
-        const overlapsInput = rect.bottom >= targetRect.top && rect.top <= targetRect.bottom;
-        const isRightSide = rect.left >= targetRect.right - 120;
-        const isIconSized = rect.width <= 64 && rect.height <= 64;
-        return overlapsInput && isRightSide && isIconSized;
-      })
-      .sort((a, b) => b.rect.left - a.rect.left)[0]?.button;
-    if (positionalButton) return positionalButton;
-
-    return buttons
-      .map((button) => ({ button, rect: button.getBoundingClientRect() }))
-      .filter(({ rect }) => {
-        const closeVertically = Math.abs((rect.top + rect.bottom) / 2 - (targetRect.top + targetRect.bottom) / 2) <= 80;
-        const nearRightEdge = rect.left >= targetRect.left && rect.left <= targetRect.right + 120;
-        const clickableSize = rect.width >= 24 && rect.width <= 96 && rect.height >= 24 && rect.height <= 96;
-        return closeVertically && nearRightEdge && clickableSize;
-      })
-      .sort((a, b) => {
-        const aDistance = Math.abs(a.rect.left - targetRect.right);
-        const bDistance = Math.abs(b.rect.left - targetRect.right);
-        return aDistance - bDistance;
-      })[0]?.button || null;
+      if (/settings|style.creator|folder|profile|draft|设置|样式创建器|文件夹|草稿/.test(label)) return false;
+      return /\b(send|submit|create|imagine|generate)\b|发送|提交|创建|生成/.test(label)
+        || Boolean(form && button.getAttribute("type") === "submit");
+    }) || null;
   }
 
   function focusAndSetText(target, text) {
@@ -2162,10 +2168,7 @@
   async function downloadVisibleImages(options = {}) {
     const onlyNew = options.onlyNew === true;
     const silent = options.silent === true;
-    const waitForNew = options.waitForNew === true;
-    const images = waitForNew
-      ? await waitForVisibleImages({ onlyNew, timeoutSeconds: 45 })
-      : visibleImageUrls();
+    const images = visibleImageUrls();
 
     const unique = [...new Set(images)]
       .filter((src) => !onlyNew || !state.downloadedUrls.has(src))
@@ -2178,20 +2181,7 @@
       return;
     }
 
-    for (let index = 0; index < unique.length; index += 1) {
-      const url = unique[index];
-      state.downloadedUrls.add(url);
-      chrome.runtime.sendMessage({
-        type: "download-url",
-        url,
-        filename: `midjourney-visible/mj-${Date.now()}-${index + 1}${guessExtension(url)}`
-      });
-      await sleep(120);
-    }
-
-    setStatus(`已提交 ${unique.length} 张可见图片到浏览器下载。`);
-    addLog(`已提交 ${unique.length} 张可见图片到浏览器下载。`, "success");
-    if (!silent) render();
+    await downloadImageUrls(unique, { silent, limit: 200, label: "可见图片" });
   }
 
   function bindImageHoverDownloads() {
@@ -2199,6 +2189,29 @@
     document.addEventListener("pointermove", handleImageHoverMove, true);
     document.addEventListener("scroll", () => repositionImageHoverOverlay(), true);
     window.addEventListener("resize", () => repositionImageHoverOverlay(), { passive: true });
+    checkAutoDownloads();
+    setInterval(checkAutoDownloads, 5000);
+  }
+
+  async function checkAutoDownloads() {
+    if (!state.settings.autoDownload) {
+      autoDownloadEnabled = false;
+      return;
+    }
+    if (!autoDownloadEnabled) {
+      markVisibleImagesAsSeen();
+      autoDownloadEnabled = true;
+      return;
+    }
+    if (autoDownloadBusy) return;
+    autoDownloadBusy = true;
+    try {
+      await downloadVisibleImages({ onlyNew: true, silent: true });
+    } catch (_) {
+      setWarning("自动下载暂时失败，请确认扩展仍已启用后重试。");
+    } finally {
+      autoDownloadBusy = false;
+    }
   }
 
   function ensureImageHoverOverlay() {
@@ -2282,20 +2295,28 @@
   }
 
   async function downloadImageUrls(urls, options = {}) {
-    const unique = [...new Set(urls)].filter(Boolean).slice(0, 20);
+    const unique = [...new Set(urls)].filter(Boolean).slice(0, options.limit || 20);
     if (!unique.length) return;
+    let submitted = 0;
     for (let index = 0; index < unique.length; index += 1) {
       const url = unique[index];
-      state.downloadedUrls.add(url);
-      chrome.runtime.sendMessage({
+      const response = await sendRuntimeMessage({
         type: "download-url",
         url,
         filename: `midjourney-visible/mj-${Date.now()}-${index + 1}${guessExtension(url)}`
       });
+      if (response?.ok) {
+        state.downloadedUrls.add(url);
+        submitted += 1;
+      }
       await sleep(80);
     }
-    setStatus(`已提交 ${unique.length} 张${options.label || "图片"}到浏览器下载。`);
-    if (!options.silent) render();
+    if (submitted) addLog(`已提交 ${submitted} 张${options.label || "图片"}到浏览器下载。`, "success");
+    if (!options.silent) {
+      if (submitted < unique.length) setWarning(`已提交 ${submitted} 张，${unique.length - submitted} 张下载失败，请重试。`);
+      else setStatus(`已提交 ${submitted} 张${options.label || "图片"}到浏览器下载。`);
+      render();
+    }
   }
 
   function imageGroupUrls(image) {
@@ -2314,23 +2335,6 @@
 
   function imageUrl(image) {
     return image?.currentSrc || image?.src || "";
-  }
-
-  async function waitForVisibleImages(options = {}) {
-    const onlyNew = options.onlyNew === true;
-    const timeoutSeconds = Math.max(5, Number(options.timeoutSeconds) || 30);
-    for (let elapsed = 0; elapsed <= timeoutSeconds; elapsed += 3) {
-      const images = visibleImageUrls();
-      const candidates = onlyNew
-        ? images.filter((src) => !state.downloadedUrls.has(src))
-        : images;
-      if (candidates.length) return images;
-      if (!state.running) return images;
-      state.status = `等待新图片出现：${timeoutSeconds - elapsed} 秒`;
-      updateStatusDisplay();
-      await sleep(3000);
-    }
-    return visibleImageUrls();
   }
 
   function markVisibleImagesAsSeen() {
@@ -2473,12 +2477,6 @@
     if (state.logs.length > 60) state.logs = state.logs.slice(-60);
   }
 
-  function friendlySendError(error) {
-    const message = error?.message || String(error || "未知错误");
-    const category = failureCategoryLabel(classifyFailureText(message));
-    return `${category}：${message}`;
-  }
-
   function clearLogs() {
     state.logs = [];
     setStatus("日志已清空。");
@@ -2492,11 +2490,6 @@
       minute: "2-digit",
       second: "2-digit"
     });
-  }
-
-  function shorten(value) {
-    const text = String(value);
-    return text.length > 72 ? `${text.slice(0, 72)}...` : text;
   }
 
   function isVisible(element) {

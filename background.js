@@ -153,6 +153,8 @@ async function processNextQueueTaskLocked(tabId, runnerId) {
   addStoredLog(state, `准备发送：${shorten(task.prompt)}`, "info");
   await setStoredState(state);
 
+  // Leave a recovery wake-up even if the service worker stops during a send.
+  await scheduleNextAlarm(state.activeTaskStartedAt + ACTIVE_TASK_TIMEOUT_MS);
   const response = await sendPromptToTab(tabId, task);
 
   const latest = await getStoredState();
@@ -217,7 +219,7 @@ async function sendPromptToTab(tabId, task) {
 }
 
 function scheduleNextAlarm(timestamp) {
-  chrome.alarms.create(QUEUE_ALARM, { when: Math.max(Date.now() + 1000, Number(timestamp) || Date.now() + 1000) });
+  return chrome.alarms.create(QUEUE_ALARM, { when: Math.max(Date.now() + 1000, Number(timestamp) || Date.now() + 1000) });
 }
 
 function keepQueueTabAwake(tabId) {
@@ -280,8 +282,8 @@ function failureCategoryLabel(category) {
 }
 
 function randomSendIntervalSeconds(settings = {}) {
-  const min = Math.max(1, Number(settings.sendIntervalMin) || 10);
-  const max = Math.max(1, Number(settings.sendIntervalMax) || 30);
+  const min = Math.max(1, Number(settings.sendIntervalMin) || 35);
+  const max = Math.max(1, Number(settings.sendIntervalMax) || 50);
   const low = Math.min(min, max);
   const high = Math.max(min, max);
   return Math.floor(Math.random() * (high - low + 1)) + low;
@@ -333,19 +335,22 @@ async function translateLine(text) {
     q: text,
     langpair: "zh-CN|en"
   });
-  const response = await fetchWithTimeout(`https://api.mymemory.translated.net/get?${params.toString()}`, TRANSLATE_TIMEOUT_MS);
-  if (!response.ok) throw new Error(`翻译接口不可用：${response.status}`);
-  const data = await response.json();
+  const data = await fetchJsonWithTimeout(`https://api.mymemory.translated.net/get?${params.toString()}`, TRANSLATE_TIMEOUT_MS);
+  if (data.responseStatus != null && Number(data.responseStatus) !== 200) {
+    throw new Error("翻译接口暂时不可用，请稍后重试。");
+  }
   const translated = data?.responseData?.translatedText;
   if (!translated) throw new Error("翻译接口没有返回结果");
   return String(translated).trim();
 }
 
-async function fetchWithTimeout(url, timeoutMs) {
+async function fetchJsonWithTimeout(url, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) throw new Error(`翻译接口不可用：${response.status}`);
+    return await response.json();
   } finally {
     clearTimeout(timer);
   }
@@ -353,24 +358,19 @@ async function fetchWithTimeout(url, timeoutMs) {
 
 function splitForTranslation(text) {
   const maxBytes = 460;
-  if (new TextEncoder().encode(text).length <= maxBytes) return [text];
-  const parts = String(text)
-    .split(/([。！？；;，,])/)
-    .reduce((items, part, index, source) => {
-      if (index % 2 === 0) items.push(`${part}${source[index + 1] || ""}`.trim());
-      return items;
-    }, [])
-    .filter(Boolean);
+  const encoder = new TextEncoder();
   const chunks = [];
   let current = "";
-  for (const part of parts.length ? parts : [text]) {
-    const next = [current, part].filter(Boolean).join(" ");
-    if (new TextEncoder().encode(next).length <= maxBytes) {
-      current = next;
-    } else {
-      if (current) chunks.push(current);
-      current = part;
+  let bytes = 0;
+  for (const character of String(text)) {
+    const size = encoder.encode(character).length;
+    if (bytes + size > maxBytes) {
+      chunks.push(current);
+      current = "";
+      bytes = 0;
     }
+    current += character;
+    bytes += size;
   }
   if (current) chunks.push(current);
   return chunks;
