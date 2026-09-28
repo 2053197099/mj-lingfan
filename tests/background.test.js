@@ -7,13 +7,14 @@ const vm = require("node:vm");
 function createRunner(initialState, { autoResponse = false } = {}) {
   let state = structuredClone(initialState);
   let sendCount = 0;
+  let scheduledAlarm;
   let resolveSend;
   let sendStarted;
   const started = new Promise((resolve) => { sendStarted = resolve; });
   const chrome = {
     alarms: {
       onAlarm: { addListener() {} },
-      create() {},
+      create(name, options) { scheduledAlarm = { name, ...options }; },
       clear() {}
     },
     runtime: { onMessage: { addListener() {} } },
@@ -33,7 +34,7 @@ function createRunner(initialState, { autoResponse = false } = {}) {
       }
     }
   };
-  const context = vm.createContext({ chrome, crypto, setTimeout, clearTimeout, console });
+  const context = vm.createContext({ chrome, crypto, setTimeout, clearTimeout, console, TextEncoder, URLSearchParams, AbortController });
   const source = fs.readFileSync(path.join(__dirname, "..", "background.js"), "utf8");
   vm.runInContext(source, context);
   return {
@@ -41,6 +42,7 @@ function createRunner(initialState, { autoResponse = false } = {}) {
     started,
     resolveSend: (response) => resolveSend(response),
     getSendCount: () => sendCount,
+    getScheduledAlarm: () => scheduledAlarm,
     getState: () => structuredClone(state),
     setState: (next) => { state = structuredClone(next); }
   };
@@ -125,4 +127,54 @@ test("a 100-item queue runs to completion without dropping tasks", async () => {
   assert.equal(actual.queue.length, 100);
   assert.equal(actual.queue.filter((task) => task.status === "sent").length, 100);
   assert.equal(actual.running, false);
+});
+
+test("missing interval settings fall back to 35 to 50 seconds", () => {
+  const runner = createRunner({});
+  for (let index = 0; index < 100; index += 1) {
+    const seconds = vm.runInContext("randomSendIntervalSeconds()", runner.context);
+    assert.ok(seconds >= 35 && seconds <= 50);
+  }
+});
+
+test("translation service errors retain the original prompt", async () => {
+  const runner = createRunner({});
+  runner.context.fetch = async () => ({ ok: true, json: async () => ({
+    responseStatus: 429, responseData: { translatedText: "Quota exceeded" }
+  }) });
+  const result = await vm.runInContext("translatePrompts(['原文'])", runner.context);
+  assert.equal(result.failedCount, 1);
+  assert.equal(result.lines[0], "原文");
+});
+
+test("long text without punctuation is split within the translation byte limit", () => {
+  const runner = createRunner({});
+  const chunks = vm.runInContext("splitForTranslation('中文😀'.repeat(150))", runner.context);
+  assert.ok(chunks.every((chunk) => new TextEncoder().encode(chunk).length <= 460));
+  assert.equal(chunks.join(""), "中文😀".repeat(150));
+});
+
+test("an in-flight send has a recovery alarm before the response arrives", async () => {
+  const runner = createRunner({
+    running: true, queueRunnerId: "run", queueTabId: 1,
+    queue: [{ id: "task", prompt: "prompt", status: "pending" }], logs: []
+  });
+  const sending = vm.runInContext("processNextQueueTask(1, 'run')", runner.context);
+  await runner.started;
+  const alarm = runner.getScheduledAlarm();
+  runner.resolveSend({ ok: true });
+  await sending;
+  assert.equal(alarm?.name, "mj-flow-next-send");
+  assert.ok(alarm.when > Date.now());
+});
+
+test("translation timeout covers reading the response body", async () => {
+  const runner = createRunner({});
+  runner.context.fetch = async (_url, { signal }) => ({
+    ok: true,
+    json: () => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+    })
+  });
+  await assert.rejects(vm.runInContext("fetchJsonWithTimeout('https://example.test', 10)", runner.context), /aborted/);
 });
