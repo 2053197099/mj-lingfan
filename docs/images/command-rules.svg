@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="980" height="420" viewBox="0 0 980 420" role="img" aria-label="MJ Lingfan command rules">
   <rect width="980" height="420" fill="#f8fafc"/>
   <text x="44" y="54" font-family="Arial, sans-serif" font-size="28" font-weight="800" fill="#172033">默认命令生成规则</text>
-  <text x="44" y="88" font-family="Arial, sans-serif" font-size="17" fill="#64748b">默认：Relax、尺寸 1:1、重复次数 1、发送间隔 10-30 秒</text>
+  <text x="44" y="88" font-family="Arial, sans-serif" font-size="17" fill="#64748b">默认：Relax、尺寸 1:1、重复次数 1、发送间隔 35-50 秒</text>
 
   <rect x="44" y="122" width="270" height="86" rx="14" fill="#fff" stroke="#d8dee8"/>
   <text x="66" y="154" font-family="Arial, sans-serif" font-size="16" font-weight="700" fill="#475569">提示词</text>
