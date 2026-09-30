@@ -252,6 +252,25 @@
   margin-left: auto;
 }
 
+.mj-flow-prompt-clear {
+  appearance: none;
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  color: #64748b;
+  background: transparent;
+  font: 20px/1 Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  cursor: pointer;
+}
+
+.mj-flow-prompt-clear:hover {
+  color: #172033;
+  background: #eef2f7;
+}
+
 .mj-flow-inline-tool {
   appearance: none;
   height: 26px;

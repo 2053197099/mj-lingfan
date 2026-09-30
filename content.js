@@ -1,7 +1,7 @@
 (() => {
   const ROOT_ID = "mj-flow-assistant-root";
   const STORE_KEY = "mjFlowState";
-  const BUILD_LABEL = "1.0.26";
+  const BUILD_LABEL = "1.0.29";
   const APP_NAME = "MJ 灵帆";
 
   const ASPECT_RATIOS = ["1:2", "9:16", "3:4", "1:1", "4:3", "16:9", "2:1", "21:9"];
@@ -241,7 +241,7 @@
       state.settings.variableTags = {};
     }
     const normalizedSendPreset = normalizeSendPreset();
-    state.queue = normalizeStoredQueue(data.queue, Boolean(data.running));
+    state.queue = normalizeStoredQueue(data.queue, Boolean(data.running), data.activeTaskId);
     state.logs = Array.isArray(data.logs) ? data.logs.slice(-60) : [];
     state.queueRunnerId = typeof data.queueRunnerId === "string" ? data.queueRunnerId : "";
     state.activeTaskId = typeof data.activeTaskId === "string" ? data.activeTaskId : "";
@@ -306,7 +306,7 @@
       if (!options.writeQueue) {
         const data = await chrome.storage.local.get(STORE_KEY);
         const latest = data[STORE_KEY] || {};
-        if (latest.running || snapshot.running) {
+        if (options.preserveQueue || latest.running || snapshot.running) {
           snapshot.queue = Array.isArray(latest.queue) ? latest.queue : snapshot.queue;
           snapshot.running = Boolean(latest.running);
           snapshot.queueRunnerId = latest.queueRunnerId || "";
@@ -314,7 +314,7 @@
           snapshot.activeTaskStartedAt = Number(latest.activeTaskStartedAt) || 0;
           snapshot.queueTabId = Number(latest.queueTabId) || 0;
           snapshot.nextSendAt = Number(latest.nextSendAt) || 0;
-          snapshot.logs = Array.isArray(latest.logs) ? latest.logs : snapshot.logs;
+          snapshot.logs = options.clearLogs ? [] : (Array.isArray(latest.logs) ? latest.logs : snapshot.logs);
           snapshot.status = typeof latest.status === "string" ? latest.status : snapshot.status;
           snapshot.warning = typeof latest.warning === "string" ? latest.warning : snapshot.warning;
         }
@@ -325,10 +325,10 @@
     return write;
   }
 
-  function normalizeStoredQueue(queue, running) {
+  function normalizeStoredQueue(queue, running, activeTaskId = "") {
     return Array.isArray(queue) && state.settings.restoreQueue
       ? queue
-        .map((task) => !running && task.status === "sending"
+        .map((task) => !running && task.status === "sending" && task.id !== activeTaskId
           ? { ...task, status: "failed", error: "发送结果未确认，请检查 Midjourney 后再决定是否重试。" }
           : task)
       : [];
@@ -521,7 +521,7 @@
     return `
       <div class="mj-flow-commandbar">
         <div class="mj-flow-command-left">
-          <button class="mj-flow-button primary" data-action="start" ${state.running ? "disabled" : ""}>开始</button>
+          <button class="mj-flow-button primary" data-action="start" ${state.running || state.activeTaskId ? "disabled" : ""}>开始</button>
           <button class="mj-flow-button" data-action="pause" ${state.running ? "" : "disabled"}>暂停</button>
           <button class="mj-flow-button primary compact" data-action="enqueue">加入队列</button>
           <div class="mj-flow-segment compact" title="发送模式">
@@ -564,6 +564,7 @@
           <span class="mj-flow-label-head">
             <span>提示词</span>
             <span class="mj-flow-chip-row inline">${aspectRatioButtons()}</span>
+            <button type="button" class="mj-flow-prompt-clear" data-action="clear-prompts" title="清空提示词，保留其他参数和队列" aria-label="清空提示词">×</button>
             <button class="mj-flow-inline-tool" data-action="translate-prompts" title="翻译提示词为英文">文A</button>
           </span>
           <textarea class="mj-flow-textarea main" data-field="prompts" placeholder="每行一个提示词。按“加入队列”后，会自动组合前缀和后缀。">${escapeHtml(state.drafts.prompts || "")}</textarea>
@@ -635,7 +636,7 @@
               <h3>1 分钟上手</h3>
               <ol>
                 <li>在“提示词”输入内容，每行一个任务。</li>
-                <li>选择尺寸，比如 <b>1:1</b>、<b>9:16</b>。</li>
+                <li>选择尺寸，比如 <b>1:1</b>、<b>9:16</b>。尺寸只影响之后新加入的任务，已有队列保留原尺寸。</li>
                 <li>选择速度，默认 <b>Relax</b>，需要快速生成时切到 <b>Fast</b>。</li>
                 <li>设置重复次数和发送间隔，默认每次随机等待 <b>35-50 秒</b>。</li>
                 <li>点击 <b>加入队列</b> 只保存任务；点击 <b>开始</b> 发送已有待发送任务，没有待发送任务时才加入当前输入。</li>
@@ -657,8 +658,8 @@
             <section>
               <h3>按钮说明</h3>
               <div class="mj-flow-help-grid">
-                <span><b>开始</b>：开始发送队列</span>
-                <span><b>暂停</b>：暂停后续发送</span>
+                <span><b>开始</b>：发送待发送任务，没有待发送任务时加入当前输入</span>
+                <span><b>暂停</b>：确认当前发送结果后停止，保留剩余任务</span>
                 <span><b>加入队列</b>：只保存任务</span>
                 <span><b>Relax / Fast</b>：慢速 / 快速</span>
                 <span><b>自动下载</b>：尝试保存新图</span>
@@ -667,9 +668,21 @@
                 <span><b>变量</b>：管理预设词</span>
                 <span><b>↻</b>：停止并清空队列、日志和输入，恢复默认参数，保留变量</span>
                 <span><b>🧹</b>：清空日志</span>
+                <span><b>提示词旁的 ×</b>：仅清空提示词，保留其他参数和队列</span>
+                <span><b>尺寸按钮</b>：选择新任务的 --ar，不修改已有队列</span>
                 <span><b>文A</b>：中文翻译成英文</span>
                 <span><b>×</b>：收起面板</span>
               </div>
+            </section>
+            <section>
+              <h3>不同尺寸的任务</h3>
+              <p>先选择 <b>9:16</b> 加入一批任务，再切换 <b>21:9</b> 加入另一批。原来的任务仍是 9:16，新任务使用 21:9。</p>
+              <div class="mj-flow-help-example">
+                <span>同一队列中的两条任务</span>
+                <code>masked assassin --relax --ar 9:16</code>
+                <code>vast mountain landscape --relax --ar 21:9</code>
+              </div>
+              <p>需要修改旧任务的尺寸时，删除该任务并按新尺寸重新加入。</p>
             </section>
             <section>
               <h3>变量</h3>
@@ -685,7 +698,7 @@
               <h3>翻译和下载</h3>
               <ul>
                 <li><b>文A</b> 只翻译提示词文本，不修改尺寸、速度、前缀和后缀。</li>
-                <li>翻译失败时会保留原文，稍后重试即可。</li>
+                <li>翻译依赖第三方免费接口，可能不稳定；失败时保留原文，稍后重试即可。</li>
                 <li>鼠标移到 Midjourney 图片上，会出现 <b>下载</b> 和 <b>下载全部</b>。</li>
                 <li>图片保存位置由浏览器决定，通常是默认下载文件夹。</li>
                 <li>自动下载跳过开启时已有的图片，仅检查之后新出现的页面图片；后台休眠可能延迟检查。</li>
@@ -696,6 +709,7 @@
               <ul>
                 <li>更新插件后，需要在扩展管理页点刷新，并刷新 Midjourney 页面。</li>
                 <li>长队列建议单独开一个浏览器窗口放 Midjourney，不要最小化。</li>
+                <li>浏览器后台唤醒或休眠可能延长实际间隔，不保证严格按秒发送。</li>
                 <li>任务失败后，插件会继续执行剩余任务；失败项可以单独重试。</li>
               </ul>
             </section>
@@ -827,6 +841,7 @@
 
   function inlineStatusText() {
     if (state.warning) return state.warning;
+    if (!state.running && state.activeTaskId) return "正在确认发送";
     const remaining = currentCountdownSeconds();
     if (remaining) return `发送间隔：${remaining} 秒`;
     if (/：\d+ 秒$/.test(state.status)) return state.status;
@@ -849,6 +864,30 @@
 
   function updateLivePanels() {
     updateStatusDisplay();
+    const start = shadow.querySelector("[data-action='start']");
+    const pause = shadow.querySelector("[data-action='pause']");
+    if (start) start.disabled = Boolean(state.running || state.activeTaskId);
+    if (pause) pause.disabled = !state.running;
+    const failedCount = state.queue.filter((task) => task.status === "failed").length;
+    const sentCount = state.queue.filter((task) => task.status === "sent").length;
+    const retryFailed = shadow.querySelector("[data-action='retry-failed']");
+    const clearSent = shadow.querySelector("[data-action='clear-sent']");
+    if (retryFailed) {
+      retryFailed.disabled = !failedCount;
+      retryFailed.textContent = `重试失败 ${failedCount}`;
+    }
+    if (clearSent) {
+      clearSent.disabled = !sentCount;
+      clearSent.textContent = `清理已完成 ${sentCount}`;
+    }
+    const tasks = new Map(state.queue.map((task) => [task.id, task]));
+    shadow.querySelectorAll(".mj-flow-task").forEach((element) => {
+      const task = tasks.get(element.dataset.taskId);
+      if (!task) return;
+      const label = element.querySelector(".mj-flow-task-status");
+      const text = `${modeLabel(task.mode)} · ${STATUS_LABELS[task.status] || task.status}`;
+      if (label && label.textContent !== text) label.textContent = text;
+    });
     const conversation = shadow.querySelector(".mj-flow-conversation");
     if (conversation) {
       conversation.innerHTML = logList();
@@ -965,7 +1004,10 @@
       });
       input.addEventListener("keydown", (event) => handleVariableSuggestKeydown(event, input));
       input.addEventListener("blur", () => {
-        setTimeout(() => closeVariableSuggest(), 140);
+        setTimeout(() => {
+          closeVariableSuggest();
+          if (!isEditingInput()) render();
+        }, 140);
       });
     });
 
@@ -1120,6 +1162,15 @@
       render();
       return;
     }
+    if (action === "clear-prompts") {
+      const target = shadow.querySelector("[data-field='prompts']");
+      if (!target) return;
+      target.value = "";
+      state.drafts.prompts = "";
+      closeVariableSuggest();
+      target.focus();
+      return;
+    }
     if (action === "translate-prompts") {
       await translatePromptField();
       return;
@@ -1160,7 +1211,7 @@
       return;
     }
     if (action === "reset-panel") {
-      resetPanelSettings();
+      await resetPanelSettings();
       return;
     }
     if (action === "clear-logs") {
@@ -1186,15 +1237,16 @@
     }
     if (action === "pause") {
       state.running = false;
-      state.queueRunnerId = "";
-      state.activeTaskId = "";
-      state.activeTaskStartedAt = 0;
-      state.queueTabId = 0;
+      if (!state.activeTaskId) {
+        state.queueRunnerId = "";
+        state.activeTaskStartedAt = 0;
+        state.queueTabId = 0;
+      }
       state.nextSendAt = 0;
       setStatus("已暂停，当前任务发送完成后停止。");
       addLog("已暂停，当前任务发送完成后停止。", "warn");
-      saveState({ writeQueue: true });
-      sendRuntimeMessage({ type: "stop-queue-runner" });
+      await saveState({ writeQueue: true });
+      await sendRuntimeMessage({ type: "stop-queue-runner" });
       render();
       return;
     }
@@ -1208,8 +1260,8 @@
       state.queueTabId = 0;
       state.nextSendAt = 0;
       setStatus("队列已清空。");
-      saveState({ writeQueue: true });
-      sendRuntimeMessage({ type: "stop-queue-runner" });
+      await saveState({ writeQueue: true });
+      await sendRuntimeMessage({ type: "stop-queue-runner" });
       render();
       return;
     }
@@ -1350,7 +1402,7 @@
     return /[\u3400-\u9fff]/.test(String(value || ""));
   }
 
-  function resetPanelSettings() {
+  async function resetPanelSettings() {
     const preserved = {
       variablesText: state.settings.variablesText || "",
       variableTags: state.settings.variableTags || {},
@@ -1374,8 +1426,8 @@
     state.nextSendAt = 0;
     state.warning = "";
     state.status = "已重置面板设置和输入框。";
-    sendRuntimeMessage({ type: "stop-queue-runner" });
-    saveState({ writeQueue: true });
+    await saveState({ writeQueue: true });
+    await sendRuntimeMessage({ type: "stop-queue-runner" });
     render({ captureDrafts: false, preserveScroll: false });
   }
 
@@ -1562,21 +1614,11 @@
   function setAspectRatio(ratio) {
     if (!ASPECT_RATIOS.includes(ratio)) return;
     state.settings.aspectRatio = ratio;
-    let updated = 0;
-    if (!state.running) {
-      for (const task of state.queue) {
-        if (task.status !== "pending") continue;
-        task.prompt = dedupeParameters(`${stripAspectParameters(task.prompt)} --ar ${ratio}`);
-        updated += 1;
-      }
-    }
-    saveState({ writeQueue: updated > 0 });
+    saveState({ preserveQueue: true });
     shadow.querySelectorAll("[data-action='set-aspect']").forEach((button) => {
       button.classList.toggle("is-active", button.dataset.ratio === ratio);
     });
-    setStatus(state.running
-      ? `尺寸已设为 --ar ${ratio}，运行中的队列不变。`
-      : `尺寸已设为 --ar ${ratio}${updated ? `，已更新 ${updated} 条待发送任务` : ""}。`);
+    setStatus(`尺寸已设为 --ar ${ratio}，仅用于之后新加入的任务。`);
   }
 
   function setSendPreset(value) {
@@ -1947,7 +1989,7 @@
   }
 
   async function startQueue() {
-    if (state.running) return;
+    if (state.running || state.activeTaskId) return;
     if (!state.queue.some((item) => item.status === "pending")) {
       const added = enqueueFromForm({ render: false });
       if (!added) {
@@ -1973,11 +2015,18 @@
       return;
     }
     render();
-    sendRuntimeMessage({ type: "start-queue-runner", runnerId: state.queueRunnerId }).then((response) => {
-      if (response?.ok) return;
+    const runnerId = state.queueRunnerId;
+    sendRuntimeMessage({ type: "start-queue-runner", runnerId }).then(async (response) => {
+      if (response?.ok || state.queueRunnerId !== runnerId) return;
+      state.running = false;
+      state.queueRunnerId = "";
+      state.activeTaskId = "";
+      state.activeTaskStartedAt = 0;
+      state.queueTabId = 0;
+      state.nextSendAt = 0;
       setWarning(`后台队列启动失败：${response?.error || "未知错误"}`);
       addLog(`后台队列启动失败：${response?.error || "未知错误"}`, "error");
-      saveState({ writeQueue: true });
+      await saveState({ writeQueue: true });
       render();
     });
   }
@@ -2480,7 +2529,7 @@
   function clearLogs() {
     state.logs = [];
     setStatus("日志已清空。");
-    saveState();
+    saveState({ clearLogs: true });
   }
 
   function formatTime(timestamp) {

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "MJ 灵帆",
-  "description": "Midjourney 文生图提示词排队、变量与自动发送助手。",
-  "version": "1.0.26",
+  "description": "Midjourney 网页端轻量助手：批量队列、随机间隔发送、尺寸选择、变量、提示词翻译与图片下载。",
+  "version": "1.0.29",
   "permissions": ["alarms", "downloads", "storage"],
   "host_permissions": [
     "https://www.midjourney.com/*",

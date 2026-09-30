@@ -50,8 +50,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === "stop-queue-runner") {
     const tabId = sender?.tab?.id;
     if (tabId) queueRunners.delete(tabId);
-    chrome.alarms.clear(QUEUE_ALARM);
-    sendResponse({ ok: true });
+    getStoredState().then(async (state) => {
+      if (state.activeTaskId) {
+        await scheduleNextAlarm(state.activeTaskStartedAt + ACTIVE_TASK_TIMEOUT_MS);
+      } else if (!state.running) {
+        await chrome.alarms.clear(QUEUE_ALARM);
+      }
+      sendResponse({ ok: true });
+    }).catch((error) => sendResponse({ ok: false, error: error.message || "暂停队列失败" }));
     return true;
   }
 
@@ -79,7 +85,7 @@ async function startQueueRunner(sender, runnerId) {
 
 async function resumeScheduledQueue() {
   const state = await getStoredState();
-  if (!state.running || !state.queueRunnerId || !state.queueTabId) return;
+  if ((!state.running && !state.activeTaskId) || !state.queueRunnerId || !state.queueTabId) return;
   queueRunners.set(state.queueTabId, state.queueRunnerId);
   keepQueueTabAwake(state.queueTabId);
   processNextQueueTask(state.queueTabId, state.queueRunnerId).finally(() => {
@@ -99,7 +105,7 @@ async function processNextQueueTask(tabId, runnerId) {
 
 async function processNextQueueTaskLocked(tabId, runnerId) {
   const state = await getStoredState();
-  if (!state.running || state.queueRunnerId !== runnerId) return;
+  if ((!state.running && !state.activeTaskId) || state.queueRunnerId !== runnerId) return;
   if (state.activeTaskId) {
     const startedAt = Number(state.activeTaskStartedAt) || 0;
     const expiresAt = startedAt + ACTIVE_TASK_TIMEOUT_MS;
@@ -118,6 +124,10 @@ async function processNextQueueTaskLocked(tabId, runnerId) {
     state.activeTaskStartedAt = 0;
     state.warning = "上一个任务发送超时，已跳过并继续执行后续任务。";
     await setStoredState(state);
+  }
+  if (!state.running) {
+    await finishPausedQueue(state);
+    return;
   }
   if (state.nextSendAt && Date.now() < state.nextSendAt - 500) {
     scheduleNextAlarm(state.nextSendAt);
@@ -158,7 +168,7 @@ async function processNextQueueTaskLocked(tabId, runnerId) {
   const response = await sendPromptToTab(tabId, task);
 
   const latest = await getStoredState();
-  if (!latest.running || latest.queueRunnerId !== runnerId || latest.activeTaskId !== task.id) return;
+  if (latest.queueRunnerId !== runnerId || latest.activeTaskId !== task.id) return;
   const latestTask = latest.queue.find((item) => item.id === task.id);
   if (!latestTask || latestTask.status !== "sending") return;
   latest.activeTaskId = "";
@@ -177,6 +187,11 @@ async function processNextQueueTaskLocked(tabId, runnerId) {
     latestTask.error = response?.error || "发送失败";
     latest.warning = `发送失败：${failureCategoryLabel(latestTask.errorCategory)}，已跳过并继续执行后续任务。`;
     addStoredLog(latest, `发送失败，已跳过继续：${failureCategoryLabel(latestTask.errorCategory)}：${latestTask.error}`, "error");
+  }
+
+  if (!latest.running) {
+    await finishPausedQueue(latest);
+    return;
   }
 
   if (!latest.queue.some((item) => item.status === "pending")) {
@@ -198,6 +213,18 @@ async function processNextQueueTaskLocked(tabId, runnerId) {
   latest.warning = "";
   await setStoredState(latest);
   scheduleNextAlarm(latest.nextSendAt);
+}
+
+async function finishPausedQueue(state) {
+  state.queueRunnerId = "";
+  state.activeTaskId = "";
+  state.activeTaskStartedAt = 0;
+  state.queueTabId = 0;
+  state.nextSendAt = 0;
+  state.status = "已暂停，点击开始继续剩余任务。";
+  if (state.warning) state.warning = "当前任务发送失败，队列已暂停。可检查失败项后继续。";
+  await setStoredState(state);
+  await chrome.alarms.clear(QUEUE_ALARM);
 }
 
 async function sendPromptToTab(tabId, task) {
