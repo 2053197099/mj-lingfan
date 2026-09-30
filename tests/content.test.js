@@ -21,7 +21,7 @@ function createContentContext() {
     console
   });
   const source = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
-  vm.runInContext(source.replace(/\}\)\(\);\s*$/, "Object.assign(globalThis, { normalizeStoredQueue, buildTextTasks, expandVariableCombinations, bindEvents, checkAutoDownloads, findSendButton, dispatchEnter, waitForComposerSubmission, setAspectRatio, state, DEFAULT_SETTINGS, setTestShadow: (value) => { shadow = value; } });\n})();"), context);
+  vm.runInContext(source.replace(/\}\)\(\);\s*$/, "Object.assign(globalThis, { normalizeStoredQueue, buildTextTasks, buildSuffix, expandVariableCombinations, bindEvents, checkAutoDownloads, findSendButton, dispatchEnter, waitForComposerSubmission, setAspectRatio, saveState, clearLogs, startQueue, updateLivePanels, state, DEFAULT_SETTINGS, setTestShadow: (value) => { shadow = value; }, setTestRender: (value) => { render = value; } });\n})();"), context);
   context.savedState = () => saved;
   return context;
 }
@@ -41,6 +41,87 @@ test("loading a queue keeps sent items and does not requeue an in-flight task", 
   assert.equal(stopped[1].status, "failed");
 });
 
+test("reloading while a pause is waiting for the current send preserves that task", () => {
+  const context = createContentContext();
+  context.queue = [{ id: "current", status: "sending" }, { id: "orphan", status: "sending" }];
+  const queue = vm.runInContext("normalizeStoredQueue(queue, false, 'current')", context);
+  assert.equal(queue[0].status, "sending");
+  assert.equal(queue[1].status, "failed");
+});
+
+test("clearing logs during a run persists without changing the queue or countdown", async () => {
+  const context = createContentContext();
+  context.state.running = true;
+  context.state.queueRunnerId = "run";
+  context.state.activeTaskId = "current";
+  context.state.nextSendAt = Date.now() + 35000;
+  context.state.queue = [{ id: "current", status: "sending", prompt: "portrait" }];
+  context.state.logs = [{ message: "old log" }];
+  context.state.status = "正在发送";
+  await context.saveState({ writeQueue: true });
+  const before = structuredClone(context.savedState());
+
+  context.clearLogs();
+  await new Promise((resolve) => setImmediate(resolve));
+  const actual = context.savedState();
+  assert.equal(actual.logs.length, 0);
+  assert.deepEqual(actual.queue, before.queue);
+  assert.equal(actual.activeTaskId, before.activeTaskId);
+  assert.equal(actual.nextSendAt, before.nextSendAt);
+  assert.equal(actual.running, true);
+});
+
+test("a paused active send cannot be restarted before its result is settled", async () => {
+  const context = createContentContext();
+  context.state.activeTaskId = "current";
+  context.state.queue = [{ id: "next", status: "pending", prompt: "next prompt" }];
+  await context.startQueue();
+  assert.equal(context.state.running, false);
+  assert.equal(context.state.activeTaskId, "current");
+  assert.equal(context.savedState(), undefined);
+});
+
+test("a background startup failure unlocks start and preserves pending tasks", async () => {
+  const context = createContentContext();
+  context.setTestRender(() => {});
+  context.chrome.runtime.sendMessage = (_message, callback) => callback({ ok: false, error: "没有找到 Midjourney 标签页" });
+  context.state.queue = [{ id: "next", status: "pending", prompt: "next prompt" }];
+
+  await context.startQueue();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(context.state.running, false);
+  assert.equal(context.state.queueRunnerId, "");
+  assert.equal(context.state.queue[0].status, "pending");
+  assert.equal(context.savedState().running, false);
+  assert.match(context.state.warning, /后台队列启动失败/);
+});
+
+test("live updates enable start and refresh queue buttons without replacing the active input", () => {
+  const context = createContentContext();
+  context.state.queue = [{ id: "current", mode: "text", status: "sent" }, { id: "other", status: "failed" }];
+  const start = { disabled: true };
+  const pause = { disabled: false };
+  const retry = { disabled: true, textContent: "重试失败 0" };
+  const clear = { disabled: true, textContent: "清理已完成 0" };
+  const label = { textContent: "文生图 · 发送中" };
+  const row = { dataset: { taskId: "current" }, querySelector: () => label };
+  const controls = { start, pause, "retry-failed": retry, "clear-sent": clear };
+  context.setTestShadow({ querySelectorAll: () => [row], querySelector(selector) {
+    const action = selector.match(/data-action=['"]([^'"]+)/)?.[1];
+    return controls[action] || null;
+  } });
+
+  context.updateLivePanels();
+  assert.equal(start.disabled, false);
+  assert.equal(pause.disabled, true);
+  assert.equal(retry.disabled, false);
+  assert.equal(retry.textContent, "重试失败 1");
+  assert.equal(clear.disabled, false);
+  assert.equal(clear.textContent, "清理已完成 1");
+  assert.equal(label.textContent, "文生图 · 已发送");
+});
+
 test("repeating one prompt 100 times creates 100 base tasks", () => {
   const context = createContentContext();
   const tasks = vm.runInContext(
@@ -50,21 +131,45 @@ test("repeating one prompt 100 times creates 100 base tasks", () => {
   assert.equal(tasks.length, 100);
 });
 
-test("changing aspect ratio updates queued pending prompts but not sent or sending tasks", async () => {
+test("aspect selection preserves queued tasks while idle, paused and running, and only affects new tasks", async () => {
+  for (const mode of ["idle", "paused", "running"]) {
+    const context = createContentContext();
+    context.state.running = mode === "running";
+    context.state.activeTaskId = mode === "paused" ? "sending" : "";
+    context.state.queue = ["pending", "sending", "sent", "failed"].map((status) => ({
+      id: status, status, prompt: "portrait --relax --ar 1:1", error: status === "failed" ? "原错误" : ""
+    }));
+    const original = structuredClone(context.state.queue);
+    await context.saveState({ writeQueue: true });
+    context.setTestShadow({ querySelectorAll: () => [] });
+
+    context.setAspectRatio("3:4");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepEqual(context.state.queue, original, mode);
+    assert.deepEqual(context.savedState().queue, original, mode);
+    assert.equal(context.savedState().settings.aspectRatio, "3:4");
+    const tasks = context.buildTextTasks({ prompts: ["new portrait"], prefix: "", suffix: context.buildSuffix(""), repeat: 1 });
+    assert.equal(tasks[0].prompt, "new portrait --relax --ar 3:4");
+  }
+});
+
+test("changing aspect ratio cannot overwrite a recently settled paused task in storage", async () => {
   const context = createContentContext();
-  const pending = { id: "pending", status: "pending", prompt: "portrait --relax --ar 1:1" };
-  const sending = { id: "sending", status: "sending", prompt: "portrait --relax --ar 1:1" };
-  const sent = { id: "sent", status: "sent", prompt: "portrait --relax --ar 1:1" };
-  context.state.queue = [pending, sending, sent];
+  context.state.activeTaskId = "current";
+  context.state.queue = [{ id: "current", status: "sending", prompt: "portrait --ar 1:1" }];
+  await context.saveState({ writeQueue: true });
+  context.savedState().activeTaskId = "";
+  context.savedState().queue = [{ id: "current", status: "sent", prompt: "portrait --ar 1:1" }];
   context.setTestShadow({ querySelectorAll: () => [] });
 
-  context.setAspectRatio("3:4");
+  context.setAspectRatio("21:9");
   await new Promise((resolve) => setImmediate(resolve));
 
-  assert.equal(context.state.queue[0].prompt, "portrait --relax --ar 3:4");
-  assert.equal(context.state.queue[1].prompt, "portrait --relax --ar 1:1");
-  assert.equal(context.state.queue[2].prompt, "portrait --relax --ar 1:1");
-  assert.equal(context.savedState().queue[0].prompt, "portrait --relax --ar 3:4");
+  assert.equal(context.savedState().queue[0].status, "sent");
+  assert.equal(context.savedState().queue[0].prompt, "portrait --ar 1:1");
+  assert.equal(context.savedState().activeTaskId, "");
+  assert.equal(context.savedState().settings.aspectRatio, "21:9");
 });
 
 test("changing aspect ratio during a run leaves the active queue untouched", async () => {

@@ -9,15 +9,16 @@ function createRunner(initialState, { autoResponse = false } = {}) {
   let sendCount = 0;
   let scheduledAlarm;
   let resolveSend;
+  let messageListener;
   let sendStarted;
   const started = new Promise((resolve) => { sendStarted = resolve; });
   const chrome = {
     alarms: {
       onAlarm: { addListener() {} },
       create(name, options) { scheduledAlarm = { name, ...options }; },
-      clear() {}
+      clear() { scheduledAlarm = undefined; }
     },
-    runtime: { onMessage: { addListener() {} } },
+    runtime: { onMessage: { addListener(listener) { messageListener = listener; } } },
     storage: {
       local: {
         async get() { return { mjFlowState: structuredClone(state) }; },
@@ -44,7 +45,8 @@ function createRunner(initialState, { autoResponse = false } = {}) {
     getSendCount: () => sendCount,
     getScheduledAlarm: () => scheduledAlarm,
     getState: () => structuredClone(state),
-    setState: (next) => { state = structuredClone(next); }
+    setState: (next) => { state = structuredClone(next); },
+    sendControl: (message) => new Promise((resolve) => messageListener(message, { tab: { id: 1 } }, resolve))
   };
 }
 
@@ -98,6 +100,57 @@ test("a removed task is not replaced by another task at the same index", async (
 
   assert.equal(runner.getState().queue[0].id, "second");
   assert.equal(runner.getState().queue[0].status, "pending");
+});
+
+test("pausing an in-flight send records its result without starting the next task", async () => {
+  for (const response of [{ ok: true }, { ok: false, error: "发送按钮暂不可用" }]) {
+    const runner = createRunner({
+      running: true, queueRunnerId: "run", queueTabId: 1,
+      queue: [
+        { id: "first", prompt: "first", status: "pending" },
+        { id: "second", prompt: "second", status: "pending" }
+      ], logs: []
+    });
+    const sending = vm.runInContext("processNextQueueTask(1, 'run')", runner.context);
+    await runner.started;
+    const paused = runner.getState();
+    paused.running = false;
+    paused.nextSendAt = 0;
+    runner.setState(paused);
+    await runner.sendControl({ type: "stop-queue-runner" });
+    assert.ok(runner.getScheduledAlarm()?.when > Date.now());
+    runner.resolveSend(response);
+    await sending;
+
+    const actual = runner.getState();
+    assert.equal(actual.queue[0].status, response.ok ? "sent" : "failed");
+    assert.equal(actual.queue[1].status, "pending");
+    assert.equal(actual.activeTaskId, "");
+    assert.equal(actual.queueRunnerId, "");
+    assert.equal(actual.running, false);
+    assert.equal(runner.getSendCount(), 1);
+    assert.equal(runner.getScheduledAlarm(), undefined);
+  }
+});
+
+test("a paused send can recover from a missing response without sending remaining tasks", async () => {
+  const runner = createRunner({
+    running: false, queueRunnerId: "run", queueTabId: 1,
+    activeTaskId: "first", activeTaskStartedAt: Date.now() - 100000,
+    queue: [
+      { id: "first", prompt: "first", status: "sending" },
+      { id: "second", prompt: "second", status: "pending" }
+    ], logs: []
+  });
+  await vm.runInContext("resumeScheduledQueue()", runner.context);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const actual = runner.getState();
+  assert.equal(actual.queue[0].status, "failed");
+  assert.equal(actual.queue[1].status, "pending");
+  assert.equal(actual.activeTaskId, "");
+  assert.equal(actual.running, false);
+  assert.equal(runner.getSendCount(), 0);
 });
 
 test("a 100-item queue runs to completion without dropping tasks", async () => {
